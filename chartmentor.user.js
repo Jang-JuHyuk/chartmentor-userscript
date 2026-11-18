@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         차트멘토 최영현 기록기 2.0
 // @namespace    local.chartmentor.research
-// @version      2.8.1
+// @version      2.9.0
 // @updateURL    https://raw.githubusercontent.com/Jang-JuHyuk/chartmentor-userscript/main/chartmentor.user.js
 // @downloadURL  https://raw.githubusercontent.com/Jang-JuHyuk/chartmentor-userscript/main/chartmentor.user.js
 // @match        https://chartmentor.net/*
@@ -288,7 +288,7 @@
   const heading = document.createElement('div');
   heading.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:5px;padding:9px 10px 5px;cursor:move;touch-action:none;user-select:none';
   const headingText = document.createElement('strong');
-  headingText.textContent = '⋮⋮ 차트멘토 기록기 2.8';
+  headingText.textContent = '⋮⋮ 차트멘토 기록기 2.9';
   headingText.style.cssText = 'font-size:12px;pointer-events:none';
   heading.appendChild(headingText);
   const closeBtn = document.createElement('button');
@@ -430,6 +430,259 @@
     }
     return null;
   }
+  // V2.9: 사용자 본인이 로그인한 차트멘토 채팅방의 정상적인 읽기 API를 사용한다.
+  // 별도 로그인 우회, 토큰 수집, 외부 전송 없음. 최영현 메시지만 로컬 GM 저장.
+  const SERVER_ROOM='87983b7a-ab21-4fd7-bfd3-bf42cd0d2898';
+  const SERVER_PROGRESS_KEY='cm29_server_progress';
+  const SERVER_AUTOSYNC_KEY='cm29_auto_sync';
+  const SERVER_PACE=1400;
+  const SERVER_AUTHOR='최영현';
+  const serverPanel=document.createElement('details');
+  serverPanel.open=true;
+  serverPanel.style.cssText='border:1px solid #ffffff60;border-radius:7px;padding:8px;margin-bottom:8px';
+  const serverSummary=document.createElement('summary');
+  serverSummary.textContent='서버에서 직접 채팅 수집 (새 방식)';
+  serverSummary.style.cssText='font-weight:700;cursor:pointer;margin:3px 0';
+  serverPanel.appendChild(serverSummary);
+  controls.insertBefore(serverPanel,controls.firstChild);
+  const serverInfo=document.createElement('div');
+  serverInfo.style.cssText='font-size:11px;white-space:pre-wrap;line-height:1.55;margin:7px 0';
+  serverPanel.appendChild(serverInfo);
+  const serverControls=document.createElement('div');
+  serverControls.style.cssText='display:flex;flex-direction:column;gap:6px';
+  serverPanel.appendChild(serverControls);
+  const syncOption=document.createElement('label');
+  syncOption.style.cssText='font-size:11px;display:flex;align-items:center;gap:5px;margin:7px 0';
+  const autoSync=document.createElement('input');
+  autoSync.type='checkbox';autoSync.checked=GM_getValue(SERVER_AUTOSYNC_KEY,true);
+  autoSync.onchange=()=>GM_setValue(SERVER_AUTOSYNC_KEY,autoSync.checked);
+  syncOption.append(autoSync,document.createTextNode('과거 전체 수집 완료 후, 채팅방 접속 시 새 기록 자동 보충'));
+  serverPanel.appendChild(syncOption);
+
+  // 기존 저장 기록을 삭제하지 않고, 메시지 ID가 있으면 그 ID를 우선 사용
+  function validServerId(value){
+    return typeof value==='string' && /^[0-9a-f]{8}-[0-9a-f-]{27,36}$/i.test(value);
+  }
+  function serverDate(raw){
+    const d=new Date(raw||'');
+    if(!Number.isFinite(d.getTime()))return null;
+    const parts=Object.fromEntries(new Intl.DateTimeFormat('en-GB',{
+      timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit',
+      hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'
+    }).formatToParts(d).filter(p=>p.type!=='literal').map(p=>[p.type,p.value]));
+    return parts.year+'-'+parts.month+'-'+parts.day+'T'+
+      parts.hour+':'+parts.minute+':'+parts.second+'+09:00';
+  }
+  function serverTimeLabel(raw){
+    const d=new Date(raw||'');
+    return Number.isFinite(d.getTime())
+      ?d.toLocaleTimeString('ko-KR',{timeZone:'Asia/Seoul',hour:'numeric',minute:'2-digit'})
+      :null;
+  }
+  function serverRecord(msg){
+    if(!msg || msg.author?.nickname?.trim()!==SERVER_AUTHOR || !validServerId(msg.id))
+      return null;
+    const imageCandidates=[msg.image_url,msg.file_url,msg.imageUrl,msg.fileUrl];
+    if(Array.isArray(msg.attachments))msg.attachments.forEach(a=>{
+      imageCandidates.push(a?.url,a?.image_url,a?.file_url);
+    });
+    const imgs=[...new Set(imageCandidates.map(cleanUrl).filter(Boolean))]
+      .map(url=>({alt:'첨부 이미지',sourceType:'server',url}));
+    const body=typeof msg.content==='string'?msg.content:'';
+    return {
+      author:SERVER_AUTHOR,
+      text:body,
+      briefing:body.includes('##'),
+      postedAt:serverDate(msg.created_at),
+      timeRaw:msg.created_at||null,
+      timeLabel:serverTimeLabel(msg.created_at),
+      capturedAt:new Date().toISOString(),
+      channel:'/ko/chat',
+      images:imgs,
+      messageId:msg.id,
+      roomId:msg.room_id||SERVER_ROOM,
+      authorId:msg.author?.id||null,
+      serverMessageType:msg.message_type||null,
+      serverFileUrl:typeof msg.file_url==='string'?msg.file_url:null
+    };
+  }
+  function imageMerge(older,newer){
+    const known=normalizedImages(older);
+    for(const img of normalizedImages(newer)){
+      if(img.url && known.some(x=>x.url===img.url))continue;
+      const placeholder=known.findIndex(x=>!x.url);
+      if(placeholder>=0 && img.url)known[placeholder]={...known[placeholder],...img};
+      else known.push(img);
+    }
+    return known;
+  }
+  function serverIndexer(){
+    const byId=new Map(),byContentDate=new Map();
+    for(const item of entries()){
+      const r=item.r;
+      if(validServerId(r.messageId))byId.set(r.messageId,item.key);
+      if(r.text && r.postedAt && Number.isFinite(Date.parse(r.postedAt))){
+        const key=r.text+'|'+Math.floor(Date.parse(r.postedAt)/1000);
+        const list=byContentDate.get(key)||[];
+        list.push(item);byContentDate.set(key,list);
+      }
+    }
+    return {byId,byContentDate};
+  }
+  function saveServerRecord(record,index){
+    if(!record)return 'skip';
+    const id=record.messageId;
+    let key=index.byId.get(id)||null;
+    if(!key && record.text && record.postedAt){
+      const matchKey=record.text+'|'+Math.floor(Date.parse(record.postedAt)/1000);
+      const matches=(index.byContentDate.get(matchKey)||[])
+        .filter(x=>!x.r.messageId || x.r.messageId===id);
+      if(matches.length===1)key=matches[0].key;
+    }
+    if(!key)key=PREFIX+'server_'+id;
+    const old=GM_getValue(key,null);
+    const updated=old?{
+      ...old,
+      messageId:id,
+      roomId:record.roomId,
+      authorId:record.authorId,
+      serverMessageType:record.serverMessageType,
+      serverFileUrl:record.serverFileUrl,
+      postedAt:record.postedAt||old.postedAt,
+      timeRaw:record.timeRaw||old.timeRaw,
+      timeLabel:record.timeLabel||old.timeLabel,
+      images:imageMerge(old.images,record.images),
+      text:record.text||old.text,
+      briefing:record.briefing||old.briefing
+    }:record;
+    index.byId.set(id,key);
+    if(!old || JSON.stringify(updated)!==JSON.stringify(old)){
+      GM_setValue(key,updated);
+      return old?'enriched':'added';
+    }
+    return 'already';
+  }
+  async function getServerPage(before){
+    const url=new URL('/api/v1/chat/rooms/'+SERVER_ROOM+'/messages',location.origin);
+    url.searchParams.set('limit','200');
+    if(before)url.searchParams.set('before',before);
+    const res=await fetch(url.toString(),{
+      method:'GET',credentials:'same-origin',
+      headers:{Accept:'application/json'},cache:'no-store'
+    });
+    if(res.status===401||res.status===403)
+      throw new Error('로그인 또는 채팅방 접근 권한 확인 필요 (HTTP '+res.status+')');
+    if(res.status===429)
+      throw new Error('요청 제한(429). 수집을 중단했습니다. 우회하거나 반복 요청하지 마세요.');
+    if(!res.ok)throw new Error('채팅 서버 응답 오류 HTTP '+res.status);
+    const json=await res.json();
+    if(!Array.isArray(json.messages) || typeof json.has_more!=='boolean')
+      throw new Error('서버 응답 형식이 바뀌었습니다 (messages/has_more 확인 필요)');
+    if(json.has_more && !validServerId(json.next_cursor))
+      throw new Error('다음 페이지 커서가 올바르지 않습니다');
+    return json;
+  }
+  let serverBusy=false,serverStop=false;
+  function progressLabel(extra){
+    const p=GM_getValue(SERVER_PROGRESS_KEY,null);
+    const line=p?.phase==='complete'
+      ? '과거 서버 제공 범위 조회 완료 · 다음 접속 때 신규 기록 보충'
+      :p?.phase==='catchup'
+        ? '새 기록 보충 중 · 이어받기 가능'
+        :p?.phase==='history'
+          ? '과거 기록 수집 중/중단 · 이어받기 가능'
+          : '서버 수집 전';
+    serverInfo.textContent=line+
+      '\n총 조회 '+(p?.pages||0)+'페이지 · 검사 '+(p?.seen||0)+'건 · 선생님 '+(p?.teacher||0)+'건'+
+      '\n'+(extra||p?.note||'서버가 제공하는 기록만 수집할 수 있습니다.');
+  }
+  progressLabel();
+  function hasKnownServerId(id,index){return !!(id&&index.byId.has(id));}
+  async function runServerCollection(maxPages,auto=false){
+    if(serverBusy)return;
+    if(location.hostname!=='chartmentor.net')return;
+    serverBusy=true;serverStop=false;
+    const oldState=GM_getValue(SERVER_PROGRESS_KEY,null);
+    const previouslyDone=oldState?.phase==='complete';
+    const continuation=oldState && (oldState.phase==='history'||oldState.phase==='catchup');
+    const phase=continuation?oldState.phase:(previouslyDone?'catchup':'history');
+    let state=continuation?{...oldState}:{
+      phase,cursor:null,pages:0,seen:0,teacher:0,
+      latestId:null,boundaryId:previouslyDone?oldState.latestId:null,
+      startedAt:new Date().toISOString(),note:'수집 시작'
+    };
+    const index=serverIndexer();
+    let pagesThisRun=0,foundThisRun=0,addedThisRun=0;
+    const cursors=new Set();
+    let reason='';
+    try{
+      for(let p=0;p<maxPages && !serverStop;p++){
+        const before=state.cursor||null;
+        if(before && cursors.has(before))throw new Error('커서가 반복되어 중단했습니다');
+        if(before)cursors.add(before);
+        const json=await getServerPage(before);
+        if(json.messages.length===0 && json.has_more)
+          throw new Error('다음 페이지가 있지만 메시지가 비어 있습니다');
+        if(!state.latestId && json.messages[0]?.id)
+          state.latestId=json.messages[0].id;
+        let boundaryReached=false;
+        for(const msg of json.messages){
+          if(state.phase==='catchup' && msg.id===state.boundaryId){
+            boundaryReached=true;break;
+          }
+          state.seen++;
+          const r=serverRecord(msg);
+          if(!r)continue;
+          state.teacher++;foundThisRun++;
+          const outcome=saveServerRecord(r,index);
+          if(outcome==='added')addedThisRun++;
+        }
+        state.pages++;pagesThisRun++;
+        state.cursor=json.next_cursor||null;
+        state.updatedAt=new Date().toISOString();
+        state.note='이번 실행 '+pagesThisRun+'/'+maxPages+'페이지, 선생님 '+foundThisRun+
+          '건, 신규 '+addedThisRun+'건';
+        if(boundaryReached || !json.has_more){
+          state.phase='complete';state.cursor=null;
+          state.note=boundaryReached?'이전 최신 메시지에 도달해 새 기록 보충 완료'
+            :'서버에서 더 오래된 메시지가 없다고 응답함 (has_more=false)';
+        }
+        GM_setValue(SERVER_PROGRESS_KEY,state);
+        if(pagesThisRun===1||pagesThisRun%3===0){
+          progressLabel(state.note);
+          activity.textContent=state.note;
+          refresh();
+        }
+        if(state.phase==='complete')break;
+        if(p<maxPages-1)await sleep(SERVER_PACE);
+      }
+      if(serverStop)reason='사용자 중지. 다음 실행에서 저장된 커서부터 재개합니다.';
+      else if(state.phase!=='complete')reason='이번 회차 페이지 제한에 도달. 다시 누르면 이어서 진행합니다.';
+    }catch(err){
+      reason='중단: '+err.message;
+      console.error('차트멘토 서버 수집 오류',err);
+      if(!auto)alert(reason);
+    }finally{
+      serverBusy=false;
+      state.note=reason||state.note;
+      state.updatedAt=new Date().toISOString();
+      GM_setValue(SERVER_PROGRESS_KEY,state);
+      progressLabel(state.note);refresh();fillPicker();
+      activity.textContent='서버 수집 종료 · 이번에 신규 '+addedThisRun+'건';
+    }
+  }
+  button('서버 연결 시험 · 1페이지',()=>runServerCollection(1),serverControls);
+  button('서버 전체 과거 수집 · 이어받기 (100페이지/회)',()=>runServerCollection(100),serverControls);
+  button('서버 수집 중지',()=>{
+    serverStop=true;activity.textContent='현재 페이지 저장 후 중지 요청됨';
+  },serverControls);
+  // 과거를 한 번 모두 조회한 뒤에만 새 메시지를 가볍게 보충한다.
+  setTimeout(()=>{
+    if(GM_getValue(SERVER_AUTOSYNC_KEY,true) &&
+       GM_getValue(SERVER_PROGRESS_KEY,null)?.phase==='complete')
+      runServerCollection(20,true);
+  },6000);
+
   // V2.8: 전체 과거 대화 수집을 위한 길게 이어지는 스크롤 세션
   // 서버의 '최초 대화' 표시는 확인할 수 없으므로 멈춤과 완전 수집을 구별한다.
   const HISTORY_KEY='cm28_history_progress';
@@ -559,16 +812,17 @@
 
 
   function downloadJSON() {
-    const out={version:'2.8.0',exportedAt:new Date().toISOString(),
+    const out={version:'2.9.0',exportedAt:new Date().toISOString(),
       records:entries().map(x => ({...x.r, classification:resolved(x),
         storageKey:x.key})),
       manualLabels:entries().map(x => ({storageKey:x.key,
         value:GM_getValue(labelKey(x.key),null)})).filter(x=>x.value),
       historyProgress:GM_getValue(HISTORY_KEY,null),
+      serverProgress:GM_getValue(SERVER_PROGRESS_KEY,null),
       knownDateRange:oldestPost(),
       completenessNote:'이 파일은 브라우저 화면에 로딩되어 확인된 메시지를 포함합니다. 사이트의 최초 메시지까지 수집되었음을 보증하지 않습니다.'};
     const url=URL.createObjectURL(new Blob([JSON.stringify(out,null,2)],{type:'application/json'}));
-    const a=document.createElement('a'); a.href=url; a.download='chartmentor_v2_8_backup.json'; a.click();
+    const a=document.createElement('a'); a.href=url; a.download='chartmentor_v2_9_backup.json'; a.click();
     setTimeout(()=>URL.revokeObjectURL(url),1000);
   }
   button('JSON 백업 (라벨 포함)',downloadJSON,backupControls);
@@ -784,7 +1038,7 @@
     const x=selectedItem();
     if(!x)return alert('먼저 메시지를 선택해 주세요.');
     const packet={
-      version:'2.8.0',kind:'chartmentor-analysis-packet',
+      version:'2.9.0',kind:'chartmentor-analysis-packet',
       exportedAt:new Date().toISOString(),
       message:{storageKey:x.key,author:x.r.author,text:x.r.text,
         postedAt:x.r.postedAt,timeRaw:x.r.timeRaw,
