@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         차트멘토 최영현 기록기 2.0
 // @namespace    local.chartmentor.research
-// @version      2.7.1
+// @version      2.8.0
 // @updateURL    https://raw.githubusercontent.com/Jang-JuHyuk/chartmentor-userscript/main/chartmentor.user.js
 // @downloadURL  https://raw.githubusercontent.com/Jang-JuHyuk/chartmentor-userscript/main/chartmentor.user.js
 // @match        https://chartmentor.net/*
@@ -288,7 +288,7 @@
   const heading = document.createElement('div');
   heading.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:5px;padding:9px 10px 5px;cursor:move;touch-action:none;user-select:none';
   const headingText = document.createElement('strong');
-  headingText.textContent = '⋮⋮ 차트멘토 기록기 2.7';
+  headingText.textContent = '⋮⋮ 차트멘토 기록기 2.8';
   headingText.style.cssText = 'font-size:12px;pointer-events:none';
   heading.appendChild(headingText);
   const closeBtn = document.createElement('button');
@@ -430,27 +430,125 @@
     }
     return null;
   }
-  let scrolling=false, stopScroll=false;
-  button('과거 채팅 자동 수집 (최대 35회)', async () => {
-    if (scrolling) return;
-    if (!findScroller()) { alert('채팅 스크롤 영역을 찾지 못했습니다.'); return; }
-    scrolling=true; stopScroll=false;
-    let start=entries().length, stuck=0;
-    for (let i=1;i<=35 && !stopScroll;i++) {
-      let sc=findScroller(); if (!sc) break;
-      let top=sc.scrollTop, height=sc.scrollHeight;
-      sc.scrollTop = top - Math.max(250,Math.floor(sc.clientHeight*.7));
-      activity.textContent=`과거 탐색 ${i}/35`;
-      await sleep(1600); scan();
-      let cur=findScroller(); if (!cur) break;
-      if (Math.abs(cur.scrollTop-top)<=3 && cur.scrollHeight<=height+20) stuck++;
-      else stuck=0;
-      if (stuck>=4) break;
+  // V2.8: 전체 과거 대화 수집을 위한 길게 이어지는 스크롤 세션
+  // 서버의 '최초 대화' 표시는 확인할 수 없으므로 멈춤과 완전 수집을 구별한다.
+  const HISTORY_KEY='cm28_history_progress';
+  const historyHelp=document.createElement('div');
+  historyHelp.style.cssText='font-size:11px;line-height:1.5;white-space:pre-wrap;opacity:.95;margin-bottom:7px';
+  controls.appendChild(historyHelp);
+  let scrolling=false,stopScroll=false;
+  const initialHistory=GM_getValue(HISTORY_KEY,null);
+  if(initialHistory?.state==='running'){
+    GM_setValue(HISTORY_KEY,{...initialHistory,state:'interrupted',
+      note:'페이지가 닫히거나 새로고침되어 중단됨. 동일 버튼을 누르면 이어서 위로 탐색합니다.'});
+  }
+  function oldestPost() {
+    let oldest=Infinity, newest=-Infinity;
+    for(const {r} of entries()){
+      const t=r.postedAt?Date.parse(r.postedAt):NaN;
+      if(Number.isFinite(t)){oldest=Math.min(oldest,t);newest=Math.max(newest,t);}
     }
-    scrolling=false; refresh();
-    activity.textContent=`탐색 종료 / 새 기록 ${entries().length-start}건`;
-  }, controls);
-  button('자동 스크롤 중지', ()=>{stopScroll=true;}, controls);
+    return {oldest:Number.isFinite(oldest)?new Date(oldest).toISOString():null,
+      newest:Number.isFinite(newest)?new Date(newest).toISOString():null};
+  }
+  function localTime(iso) {
+    return iso?new Date(iso).toLocaleString('ko-KR',{timeZone:'Asia/Seoul',
+      year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}):'확인된 날짜 없음';
+  }
+  function oldestScreenKey(sc) {
+    const col=sc.querySelector('[data-chat-column="true"]');
+    if(!col)return '';
+    return (col.querySelector('[data-chat-time="true"]')?.getAttribute('title')||'')+
+      ' / '+(col.textContent||'').replace(/\\s+/g,' ').slice(0,140);
+  }
+  function showHistoryProgress(message) {
+    const bounds=oldestPost();
+    const saved=GM_getValue(HISTORY_KEY,null);
+    historyHelp.textContent=
+      '현재 저장된 가장 오래된 작성일: '+localTime(bounds.oldest)+
+      '\n'+(message||saved?.note||'과거 기록 수집 전')+
+      '\n※ 사이트에서 처음 메시지까지 열렸는지는 별도 확인이 필요합니다.';
+  }
+  showHistoryProgress();
+  async function gatherHistory(maxSteps,mode) {
+    if(scrolling)return;
+    if(!findScroller()){
+      alert('채팅 스크롤 영역을 찾지 못했습니다. 채팅 메시지를 표시한 뒤 다시 눌러 주세요.');
+      return;
+    }
+    scrolling=true;stopScroll=false;
+    scan();
+    let initialCount=entries().length,stuck=0,step=0;
+    let reason='정해진 탐색 횟수에 도달했습니다. 이어서 다시 실행할 수 있습니다.';
+    const startedAt=new Date().toISOString();
+    try {
+      for(step=1;step<=maxSteps && !stopScroll;step++){
+        const sc=findScroller();
+        if(!sc){reason='채팅 스크롤 영역을 찾지 못해 중단됨';break;}
+        const beforeTop=sc.scrollTop,beforeHeight=sc.scrollHeight;
+        const first=oldestScreenKey(sc);
+        const beforeCount=entries().length;
+        const beforeOldest=oldestPost().oldest;
+        const stepSize=Math.max(220,Math.floor(sc.clientHeight*0.65));
+        sc.scrollTop=Math.max(0,beforeTop-stepSize);
+        // 채팅 사이트가 이전 메시지를 비동기 로드할 시간을 확보
+        await sleep(1050);
+        scan();
+        await sleep(500);
+        scan();
+        const cur=findScroller();
+        if(!cur){reason='스크롤 영역이 사라져 중단됨';break;}
+        const afterTop=cur.scrollTop;
+        const afterFirst=oldestScreenKey(cur);
+        const afterOldest=oldestPost().oldest;
+        const movedUp=afterTop<beforeTop-3;
+        const olderLoaded=(afterFirst!==first && !!afterFirst) ||
+          (!!afterOldest && (!beforeOldest || afterOldest<beforeOldest));
+        const heightChanged=cur.scrollHeight>beforeHeight+40;
+        const newRecords=entries().length>beforeCount;
+        // 실시간 채팅이 맨 아래로 강제로 점프할 때 무한 반복 방지
+        if(afterTop>beforeTop+Math.max(stepSize*3,800) && !olderLoaded && !newRecords){
+          reason='채팅방이 아래로 점프해 자동 탐색을 중지함. 다시 실행해 주세요.';
+          break;
+        }
+        if(movedUp || olderLoaded || (heightChanged && afterFirst!==first) || newRecords)
+          stuck=0;
+        else
+          stuck++;
+        const note=`${mode} ${step}/${maxSteps} · 신규 기록 +${entries().length-initialCount}건 · 정지 신호 ${stuck}/8`;
+        GM_setValue(HISTORY_KEY,{
+          state:'running',mode,startedAt,updatedAt:new Date().toISOString(),
+          steps:step,initialCount,currentCount:entries().length,
+          oldestPostAt:afterOldest, note
+        });
+        activity.textContent=note;
+        if(step%5===0)showHistoryProgress(note);
+        if(stuck>=8){
+          reason='위쪽에서 8회 연속 새로운 메시지/이동을 확인하지 못함. 가장 오래된 메시지 도달 여부는 화면에서 확인 필요.';
+          break;
+        }
+      }
+      if(stopScroll)reason='사용자가 중지함. 다음 실행에서 계속 탐색 가능.';
+    } catch(err) {
+      reason='탐색 오류: '+err.message;
+      console.error('차트멘토 과거 수집 오류',err);
+    } finally {
+      scrolling=false;
+      const final={state:'stopped',mode,startedAt,updatedAt:new Date().toISOString(),
+        steps:Math.min(step,maxSteps),initialCount,currentCount:entries().length,
+        oldestPostAt:oldestPost().oldest,note:reason};
+      GM_setValue(HISTORY_KEY,final);
+      refresh();showHistoryProgress(reason);
+      activity.textContent=`과거 탐색 종료 · 신규 기록 +${entries().length-initialCount}건`;
+    }
+  }
+  button('처음 대화까지 과거 수집 (최대 500회)',()=>{
+    gatherHistory(500,'전체 과거');
+  },controls);
+  button('과거 채팅 빠른 수집 (35회)',()=>{
+    gatherHistory(35,'빠른 탐색');
+  },controls);
+  button('자동 스크롤 중지',()=>{stopScroll=true;},controls);
   button('현재 화면 이미지 다시 탐색 · 누락 현황',()=>{
     const previous=imageList().length;
     scan();
@@ -461,13 +559,16 @@
 
 
   function downloadJSON() {
-    const out={version:'2.7.0',exportedAt:new Date().toISOString(),
+    const out={version:'2.8.0',exportedAt:new Date().toISOString(),
       records:entries().map(x => ({...x.r, classification:resolved(x),
         storageKey:x.key})),
       manualLabels:entries().map(x => ({storageKey:x.key,
-        value:GM_getValue(labelKey(x.key),null)})).filter(x=>x.value)};
+        value:GM_getValue(labelKey(x.key),null)})).filter(x=>x.value),
+      historyProgress:GM_getValue(HISTORY_KEY,null),
+      knownDateRange:oldestPost(),
+      completenessNote:'이 파일은 브라우저 화면에 로딩되어 확인된 메시지를 포함합니다. 사이트의 최초 메시지까지 수집되었음을 보증하지 않습니다.'};
     const url=URL.createObjectURL(new Blob([JSON.stringify(out,null,2)],{type:'application/json'}));
-    const a=document.createElement('a'); a.href=url; a.download='chartmentor_v2_6_backup.json'; a.click();
+    const a=document.createElement('a'); a.href=url; a.download='chartmentor_v2_8_backup.json'; a.click();
     setTimeout(()=>URL.revokeObjectURL(url),1000);
   }
   button('JSON 백업 (라벨 포함)',downloadJSON,backupControls);
@@ -683,7 +784,7 @@
     const x=selectedItem();
     if(!x)return alert('먼저 메시지를 선택해 주세요.');
     const packet={
-      version:'2.7.0',kind:'chartmentor-analysis-packet',
+      version:'2.8.0',kind:'chartmentor-analysis-packet',
       exportedAt:new Date().toISOString(),
       message:{storageKey:x.key,author:x.r.author,text:x.r.text,
         postedAt:x.r.postedAt,timeRaw:x.r.timeRaw,
