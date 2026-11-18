@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         차트멘토 최영현 기록기 2.0
 // @namespace    local.chartmentor.research
-// @version      2.6.2
+// @version      2.7.0
 // @updateURL    https://raw.githubusercontent.com/Jang-JuHyuk/chartmentor-userscript/main/chartmentor.user.js
 // @downloadURL  https://raw.githubusercontent.com/Jang-JuHyuk/chartmentor-userscript/main/chartmentor.user.js
 // @match        https://chartmentor.net/*
@@ -95,6 +95,64 @@
     }
     GM_setValue(key, r); return true;
   }
+  // V2.7: 지연 로딩된 이미지도 원본 URL로 연결하는 탐색기
+  // 이미지·링크·picture의 속성을 검사하되, 실제 저장은 승인된 S3 경로만 허용한다.
+  function imageSourceUrl(node, row) {
+    const candidates = [];
+    const add = raw => {
+      if (!raw || typeof raw !== 'string') return;
+      candidates.push(raw.trim().replace(/^["']|["']$/g, ''));
+    };
+    const els = [node, ...node.querySelectorAll('img,source,a,[data-src],[data-original],[data-full-src],[data-image-url],[style]')];
+    let parent = node.parentElement;
+    while (parent && parent !== row) {
+      els.push(parent);
+      parent = parent.parentElement;
+    }
+    for (const el of els.slice(0,100)) {
+      for (const attr of ['data-original','data-full-src','data-image-url','data-src','href','src']) {
+        add(el.getAttribute?.(attr));
+      }
+      if (el instanceof HTMLImageElement) add(el.currentSrc);
+      for (const attr of ['srcset','data-srcset']) {
+        const value=el.getAttribute?.(attr)||'';
+        value.split(',').forEach(part=>add(part.trim().split(/\\s+/)[0]));
+      }
+      const style=el.getAttribute?.('style')||'';
+      const bg=style.match(/url\\(["']?([^"'\\)]+)["']?\\)/i);
+      if (bg) add(bg[1]);
+    }
+    for (const candidate of candidates) {
+      const url=cleanUrl(candidate);
+      if (url) return url;
+    }
+    return null;
+  }
+  function findRowImages(row) {
+    const frames=[...row.querySelectorAll('[data-chat-image-frame="true"]')];
+    const imgs=[...row.querySelectorAll('img')].filter(img=>{
+      if (frames.some(frame=>frame.contains(img))) return false;
+      const source=img.currentSrc || img.getAttribute('src') || '';
+      const isAttachment=/첨부|차트/i.test(img.alt||'') ||
+        img.getAttribute('role')==='button' ||
+        !!cleanUrl(source) ||
+        (img.closest('[data-chat-bubble="true"]') && img.getBoundingClientRect().width>=90);
+      return !!isAttachment;
+    });
+    const links=[...row.querySelectorAll('a[href*="/uploads/chat/files/"]')]
+      .filter(a=>!frames.some(f=>f.contains(a)) && !imgs.some(img=>a.contains(img)));
+    return [...frames,...imgs,...links].map(node=>{
+      const url=imageSourceUrl(node,row);
+      const image=node.matches('img')?node:node.querySelector('img');
+      const source=image?.getAttribute('src')||'';
+      return {
+        alt:image?.alt||'첨부 이미지',
+        sourceType:url?'web-or-other':(source.startsWith('blob:')?'blob':'unresolved'),
+        url
+      };
+    });
+  }
+
   function parseTime(row) {
     const el = row.querySelector('[data-chat-time="true"]');
     const raw = el?.getAttribute('title') || '';
@@ -115,9 +173,7 @@
       col.querySelectorAll('[data-chat-bubble-row="true"]').forEach(row => {
         const text = [...row.querySelectorAll('p[data-chat-text="true"]')]
           .map(p => p.innerText || p.textContent).join('\n').trim();
-        const images = [...row.querySelectorAll('[data-chat-bubble="true"] img')]
-          .map(img => ({alt:img.alt || '첨부 이미지', sourceType:'web-or-other',
-            url:cleanUrl(img.getAttribute('src') || img.currentSrc)}));
+        const images = findRowImages(row);
         if (!text && !images.length) return;
         if (saveRecord({author:'최영현', text, images, ...parseTime(row),
             channel:location.pathname})) changed = true;
@@ -232,7 +288,7 @@
   const heading = document.createElement('div');
   heading.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:5px;padding:9px 10px 5px;cursor:move;touch-action:none;user-select:none';
   const headingText = document.createElement('strong');
-  headingText.textContent = '⋮⋮ 차트멘토 기록기 2.6';
+  headingText.textContent = '⋮⋮ 차트멘토 기록기 2.7';
   headingText.style.cssText = 'font-size:12px;pointer-events:none';
   heading.appendChild(headingText);
   const closeBtn = document.createElement('button');
@@ -349,9 +405,18 @@
   backupHelp.textContent='백업 파일은 로컬에 저장됩니다. 기존 기록 키(cm22_message_)를 유지합니다. 데이터 삭제 기능은 없습니다.';
   backupHelp.style.cssText='font-size:11px;line-height:1.5;opacity:.85;margin-top:9px';
   backupPage.appendChild(backupHelp);
+  function imageStats() {
+    const rows=entries();
+    const imageRows=rows.filter(x=>(x.r.images||[]).length);
+    const unresolvedRows=imageRows.filter(x=>(x.r.images||[]).some(img=>!cleanUrl(img.url)));
+    return {records:rows.length,imageRows:imageRows.length,
+      unresolvedRows:unresolvedRows.length,sourceCount:imageList().length};
+  }
   function refresh() {
     const list = entries();
-    status.textContent = `기록 ${list.length} · 날짜 ${list.filter(x=>x.r.postedAt).length} · 원본 이미지 ${imageList().length}`;
+    const stats=imageStats();
+    status.style.whiteSpace='pre-line';
+    status.textContent=`기록 ${list.length} · 날짜 ${list.filter(x=>x.r.postedAt).length}\n원본 이미지 ${stats.sourceCount} · URL 미확인 첨부 기록 ${stats.unresolvedRows}`;
   }
   // 문서 내부 스크롤 영역에서만 동작, 2.4 성공 로직 유지
   function findScroller() {
@@ -386,9 +451,17 @@
     activity.textContent=`탐색 종료 / 새 기록 ${entries().length-start}건`;
   }, controls);
   button('자동 스크롤 중지', ()=>{stopScroll=true;}, controls);
+  button('현재 화면 이미지 다시 탐색 · 누락 현황',()=>{
+    const previous=imageList().length;
+    scan();
+    const stats=imageStats();
+    activity.textContent=`이미지 확인: 원본 ${stats.sourceCount}개 / URL 미확인 ${stats.unresolvedRows}건`;
+    alert(`첨부가 감지된 기록: ${stats.imageRows}건\n원본 URL: ${stats.sourceCount}개\n원본 주소 미확인 기록: ${stats.unresolvedRows}건\n이번 재탐색으로 찾은 원본: +${stats.sourceCount-previous}개\n\n과거 이미지가 화면에 다시 나타나면 지연 로딩 후 자동으로 보완을 시도합니다. 원본 이미지가 실제로 제공되지 않으면 자동 복원할 수 없습니다.`);
+  },controls);
+
 
   function downloadJSON() {
-    const out={version:'2.6.0',exportedAt:new Date().toISOString(),
+    const out={version:'2.7.0',exportedAt:new Date().toISOString(),
       records:entries().map(x => ({...x.r, classification:resolved(x),
         storageKey:x.key})),
       manualLabels:entries().map(x => ({storageKey:x.key,
@@ -610,7 +683,7 @@
     const x=selectedItem();
     if(!x)return alert('먼저 메시지를 선택해 주세요.');
     const packet={
-      version:'2.6.0',kind:'chartmentor-analysis-packet',
+      version:'2.7.0',kind:'chartmentor-analysis-packet',
       exportedAt:new Date().toISOString(),
       message:{storageKey:x.key,author:x.r.author,text:x.r.text,
         postedAt:x.r.postedAt,timeRaw:x.r.timeRaw,
@@ -631,11 +704,24 @@
     activity.textContent='선택 사례 패킷을 저장했습니다.';
   },fields);
 
+  // 이미지의 src/href가 나중에 설정되어도 놓치지 않도록 속성 변경과 로드를 감시
   let scanTimer;
+  function queueScan(delay=180) {
+    clearTimeout(scanTimer);
+    scanTimer=setTimeout(scan,delay);
+  }
   new MutationObserver(mutations=>{
       if (mutations.every(m => panel.contains(m.target) || launcher.contains(m.target))) return;
-      clearTimeout(scanTimer);scanTimer=setTimeout(scan,600);
-    }).observe(document.body,{childList:true,subtree:true});
+      queueScan();
+    }).observe(document.body,{
+      childList:true,subtree:true,attributes:true,
+      attributeFilter:['src','srcset','href','data-src','data-original','data-full-src','data-image-url','style','title']
+    });
+  document.addEventListener('load',event=>{
+    const target=event.target;
+    if(target instanceof HTMLImageElement && target.closest('[data-chat-bubble-row="true"]'))
+      queueScan(80);
+  },true);
   setInterval(()=>{scan();refresh();},5000);
   scan();refresh();fillPicker();
   button('분류 대상 목록 새로고침',fillPicker,fields);
