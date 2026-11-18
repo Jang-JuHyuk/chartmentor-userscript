@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         차트멘토 최영현 기록기 2.0
 // @namespace    local.chartmentor.research
-// @version      2.8.0
+// @version      2.8.1
 // @updateURL    https://raw.githubusercontent.com/Jang-JuHyuk/chartmentor-userscript/main/chartmentor.user.js
 // @downloadURL  https://raw.githubusercontent.com/Jang-JuHyuk/chartmentor-userscript/main/chartmentor.user.js
 // @match        https://chartmentor.net/*
@@ -440,7 +440,7 @@
   const initialHistory=GM_getValue(HISTORY_KEY,null);
   if(initialHistory?.state==='running'){
     GM_setValue(HISTORY_KEY,{...initialHistory,state:'interrupted',
-      note:'페이지가 닫히거나 새로고침되어 중단됨. 동일 버튼을 누르면 이어서 위로 탐색합니다.'});
+      note:'페이지가 닫히거나 새로고침되어 중단됨. 다시 실행하면 현재 표시된 위치부터 위쪽을 탐색합니다.'});
   }
   function oldestPost() {
     let oldest=Infinity, newest=-Infinity;
@@ -459,7 +459,7 @@
     const col=sc.querySelector('[data-chat-column="true"]');
     if(!col)return '';
     return (col.querySelector('[data-chat-time="true"]')?.getAttribute('title')||'')+
-      ' / '+(col.textContent||'').replace(/\\s+/g,' ').slice(0,140);
+      ' / '+(col.textContent||'').replace(/\s+/g,' ').slice(0,140);
   }
   function showHistoryProgress(message) {
     const bounds=oldestPost();
@@ -528,7 +528,7 @@
           break;
         }
       }
-      if(stopScroll)reason='사용자가 중지함. 다음 실행에서 계속 탐색 가능.';
+      if(stopScroll)reason='사용자가 중지함. 다음 실행은 현재 표시된 위치부터 다시 위로 탐색합니다.';
     } catch(err) {
       reason='탐색 오류: '+err.message;
       console.error('차트멘토 과거 수집 오류',err);
