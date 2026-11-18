@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         차트멘토 최영현 기록기 2.0
 // @namespace    local.chartmentor.research
-// @version      2.9.0
+// @version      2.9.1
 // @updateURL    https://raw.githubusercontent.com/Jang-JuHyuk/chartmentor-userscript/main/chartmentor.user.js
 // @downloadURL  https://raw.githubusercontent.com/Jang-JuHyuk/chartmentor-userscript/main/chartmentor.user.js
 // @match        https://chartmentor.net/*
@@ -288,7 +288,7 @@
   const heading = document.createElement('div');
   heading.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:5px;padding:9px 10px 5px;cursor:move;touch-action:none;user-select:none';
   const headingText = document.createElement('strong');
-  headingText.textContent = '⋮⋮ 차트멘토 기록기 2.9';
+  headingText.textContent = '⋮⋮ 차트멘토 기록기 2.9.1';
   headingText.style.cssText = 'font-size:12px;pointer-events:none';
   heading.appendChild(headingText);
   const closeBtn = document.createElement('button');
@@ -640,7 +640,7 @@
         state.pages++;pagesThisRun++;
         state.cursor=json.next_cursor||null;
         state.updatedAt=new Date().toISOString();
-        state.note='이번 실행 '+pagesThisRun+'/'+maxPages+'페이지, 선생님 '+foundThisRun+
+        state.note='이번 실행 '+pagesThisRun+'/'+(Number.isFinite(maxPages)?maxPages:'끝까지')+'페이지, 선생님 '+foundThisRun+
           '건, 신규 '+addedThisRun+'건';
         if(boundaryReached || !json.has_more){
           state.phase='complete';state.cursor=null;
@@ -657,7 +657,7 @@
         if(p<maxPages-1)await sleep(SERVER_PACE);
       }
       if(serverStop)reason='사용자 중지. 다음 실행에서 저장된 커서부터 재개합니다.';
-      else if(state.phase!=='complete')reason='이번 회차 페이지 제한에 도달. 다시 누르면 이어서 진행합니다.';
+      else if(state.phase!=='complete')reason=Number.isFinite(maxPages)?'이번 회차 페이지 제한에 도달. 다시 누르면 이어서 진행합니다.':'완료되지 않았습니다. 현재 커서부터 다시 시작할 수 있습니다.';
     }catch(err){
       reason='중단: '+err.message;
       console.error('차트멘토 서버 수집 오류',err);
@@ -672,7 +672,7 @@
     }
   }
   button('서버 연결 시험 · 1페이지',()=>runServerCollection(1),serverControls);
-  button('서버 전체 과거 수집 · 이어받기 (100페이지/회)',()=>runServerCollection(100),serverControls);
+  button('서버 전체 과거 수집 · 끝까지 자동 (중지 가능)',()=>runServerCollection(Infinity),serverControls);
   button('서버 수집 중지',()=>{
     serverStop=true;activity.textContent='현재 페이지 저장 후 중지 요청됨';
   },serverControls);
@@ -812,7 +812,7 @@
 
 
   function downloadJSON() {
-    const out={version:'2.9.0',exportedAt:new Date().toISOString(),
+    const out={version:'2.9.1',exportedAt:new Date().toISOString(),
       records:entries().map(x => ({...x.r, classification:resolved(x),
         storageKey:x.key})),
       manualLabels:entries().map(x => ({storageKey:x.key,
@@ -822,7 +822,7 @@
       knownDateRange:oldestPost(),
       completenessNote:'이 파일은 브라우저 화면에 로딩되어 확인된 메시지를 포함합니다. 사이트의 최초 메시지까지 수집되었음을 보증하지 않습니다.'};
     const url=URL.createObjectURL(new Blob([JSON.stringify(out,null,2)],{type:'application/json'}));
-    const a=document.createElement('a'); a.href=url; a.download='chartmentor_v2_9_backup.json'; a.click();
+    const a=document.createElement('a'); a.href=url; a.download='chartmentor_v2_9_1_backup.json'; a.click();
     setTimeout(()=>URL.revokeObjectURL(url),1000);
   }
   button('JSON 백업 (라벨 포함)',downloadJSON,backupControls);
@@ -1038,7 +1038,7 @@
     const x=selectedItem();
     if(!x)return alert('먼저 메시지를 선택해 주세요.');
     const packet={
-      version:'2.9.0',kind:'chartmentor-analysis-packet',
+      version:'2.9.1',kind:'chartmentor-analysis-packet',
       exportedAt:new Date().toISOString(),
       message:{storageKey:x.key,author:x.r.author,text:x.r.text,
         postedAt:x.r.postedAt,timeRaw:x.r.timeRaw,
