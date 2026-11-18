@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         차트멘토 최영현 기록기 2.0
 // @namespace    local.chartmentor.research
-// @version      2.7.0
+// @version      2.7.1
 // @updateURL    https://raw.githubusercontent.com/Jang-JuHyuk/chartmentor-userscript/main/chartmentor.user.js
 // @downloadURL  https://raw.githubusercontent.com/Jang-JuHyuk/chartmentor-userscript/main/chartmentor.user.js
 // @match        https://chartmentor.net/*
@@ -116,10 +116,10 @@
       if (el instanceof HTMLImageElement) add(el.currentSrc);
       for (const attr of ['srcset','data-srcset']) {
         const value=el.getAttribute?.(attr)||'';
-        value.split(',').forEach(part=>add(part.trim().split(/\\s+/)[0]));
+        value.split(',').forEach(part=>add(part.trim().split(/\s+/)[0]));
       }
       const style=el.getAttribute?.('style')||'';
-      const bg=style.match(/url\\(["']?([^"'\\)]+)["']?\\)/i);
+      const bg=style.match(/url\(["']?([^"')]+)["']?\)/i);
       if (bg) add(bg[1]);
     }
     for (const candidate of candidates) {
