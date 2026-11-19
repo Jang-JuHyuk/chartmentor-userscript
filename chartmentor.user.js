@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         차트멘토 최영현 기록기 2.0
 // @namespace    local.chartmentor.research
-// @version      2.9.1
+// @version      2.9.2
 // @updateURL    https://raw.githubusercontent.com/Jang-JuHyuk/chartmentor-userscript/main/chartmentor.user.js
 // @downloadURL  https://raw.githubusercontent.com/Jang-JuHyuk/chartmentor-userscript/main/chartmentor.user.js
 // @match        https://chartmentor.net/*
@@ -288,7 +288,7 @@
   const heading = document.createElement('div');
   heading.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:5px;padding:9px 10px 5px;cursor:move;touch-action:none;user-select:none';
   const headingText = document.createElement('strong');
-  headingText.textContent = '⋮⋮ 차트멘토 기록기 2.9.1';
+  headingText.textContent = '⋮⋮ 차트멘토 기록기 2.9.2';
   headingText.style.cssText = 'font-size:12px;pointer-events:none';
   heading.appendChild(headingText);
   const closeBtn = document.createElement('button');
@@ -482,9 +482,11 @@
   function serverRecord(msg){
     if(!msg || msg.author?.nickname?.trim()!==SERVER_AUTHOR || !validServerId(msg.id))
       return null;
-    const imageCandidates=[msg.image_url,msg.file_url,msg.imageUrl,msg.fileUrl];
+    // 원본 이미지 우선, 확대보기 주소는 원본이 없을 때도 수집할 수 있도록 보강
+    const imageCandidates=[msg.image_url,msg.zoom_image_url,msg.file_url,
+      msg.imageUrl,msg.zoomImageUrl,msg.fileUrl];
     if(Array.isArray(msg.attachments))msg.attachments.forEach(a=>{
-      imageCandidates.push(a?.url,a?.image_url,a?.file_url);
+      imageCandidates.push(a?.url,a?.image_url,a?.zoom_image_url,a?.file_url);
     });
     const imgs=[...new Set(imageCandidates.map(cleanUrl).filter(Boolean))]
       .map(url=>({alt:'첨부 이미지',sourceType:'server',url}));
@@ -503,7 +505,9 @@
       roomId:msg.room_id||SERVER_ROOM,
       authorId:msg.author?.id||null,
       serverMessageType:msg.message_type||null,
-      serverFileUrl:typeof msg.file_url==='string'?msg.file_url:null
+      serverFileUrl:typeof msg.file_url==='string'?msg.file_url:null,
+      serverImageUrl:cleanUrl(msg.image_url),
+      serverZoomImageUrl:cleanUrl(msg.zoom_image_url)
     };
   }
   function imageMerge(older,newer){
@@ -548,6 +552,8 @@
       authorId:record.authorId,
       serverMessageType:record.serverMessageType,
       serverFileUrl:record.serverFileUrl,
+      serverImageUrl:record.serverImageUrl || old.serverImageUrl || null,
+      serverZoomImageUrl:record.serverZoomImageUrl || old.serverZoomImageUrl || null,
       postedAt:record.postedAt||old.postedAt,
       timeRaw:record.timeRaw||old.timeRaw,
       timeLabel:record.timeLabel||old.timeLabel,
@@ -683,6 +689,109 @@
       runServerCollection(20,true);
   },6000);
 
+  // V2.9.2: 읽기 API 재조회로 과거 이미지 링크를 보강하고 원인별로 집계.
+  // 기존 서버 과거-수집 커서는 절대 변경하지 않는다.
+  const IMAGE_REPAIR_KEY='cm292_image_repair';
+  let imageRepairBusy=false,imageRepairStop=false;
+  const repairPanel=document.createElement('details');
+  repairPanel.style.cssText='margin:7px 0;border-top:1px solid #ffffff60;padding-top:6px';
+  const repairSummary=document.createElement('summary');
+  repairSummary.textContent='이미지 누락 조사 · 재조회';
+  repairSummary.style.cssText='font-size:12px;font-weight:700;cursor:pointer';
+  repairPanel.appendChild(repairSummary);serverPanel.appendChild(repairPanel);
+  const repairInfo=document.createElement('div');
+  repairInfo.style.cssText='font-size:11px;line-height:1.45;white-space:pre-wrap;padding:6px 0';
+  repairPanel.appendChild(repairInfo);
+  const repairButtons=document.createElement('div');
+  repairButtons.style.cssText='display:flex;flex-direction:column;gap:6px';
+  repairPanel.appendChild(repairButtons);
+  function showRepairProgress(note){
+    const x=GM_getValue(IMAGE_REPAIR_KEY,null);
+    repairInfo.textContent=(x?.phase==='complete'?'마지막 이미지 재조회 완료'
+      :x?.phase==='running'?'재조회 진행/이어받기 가능':'이미지 진단 전')+
+      '\n조회 '+(x?.pages||0)+'페이지 · 선생님 이미지형 '+(x?.teacherImage||0)+'건'+
+      '\n서버 image_url 있음 '+(x?.original||0)+' · zoom_image_url 있음 '+(x?.zoom||0)+
+      '\n둘 다 없음 '+(x?.noUrls||0)+' · 주소 보강 '+(x?.recovered||0)+'건'+
+      '\n'+(note||x?.note||'기존 원본 기록과 브리핑은 그대로 유지합니다.');
+  }
+  showRepairProgress();
+  async function repairServerImages(maxPages=Infinity){
+    if(serverBusy||imageRepairBusy){
+      alert('서버 수집이 진행 중입니다. 수집이 끝난 다음 시도해 주세요.');
+      return;
+    }
+    imageRepairBusy=true;imageRepairStop=false;
+    const previous=GM_getValue(IMAGE_REPAIR_KEY,null);
+    let st=previous?.phase==='running'?{...previous}:{
+      phase:'running',cursor:null,pages:0,teacherImage:0,
+      original:0,zoom:0,noUrls:0,recovered:0,invalidUrls:0,
+      startedAt:new Date().toISOString(),note:'이미지 재조회 시작'
+    };
+    const idx=serverIndexer();
+    let n=0,reason='';
+    try{
+      const cursors=new Set();
+      while(n<maxPages && !imageRepairStop){
+        if(st.cursor && cursors.has(st.cursor))
+          throw new Error('다음 페이지 커서가 반복됩니다');
+        if(st.cursor)cursors.add(st.cursor);
+        const data=await getServerPage(st.cursor||null);
+        if(!data.messages.length && data.has_more)
+          throw new Error('메시지가 없는데 다음 페이지가 있다고 응답했습니다');
+        for(const msg of data.messages){
+          if(msg.author?.nickname?.trim()!==SERVER_AUTHOR ||
+             msg.message_type!=='image')continue;
+          st.teacherImage++;
+          if(typeof msg.image_url==='string' && msg.image_url.trim())st.original++;
+          if(typeof msg.zoom_image_url==='string' && msg.zoom_image_url.trim())st.zoom++;
+          if(!msg.image_url && !msg.zoom_image_url)st.noUrls++;
+          const entry=serverRecord(msg);
+          if(!entry)continue;
+          const knownKey=idx.byId.get(entry.messageId);
+          const prior=knownKey?GM_getValue(knownKey,null):null;
+          const hadUrl=(prior?.images||[]).some(i=>!!cleanUrl(i.url));
+          const received=entry.images.some(i=>!!i.url);
+          if(!received && (msg.image_url||msg.zoom_image_url))st.invalidUrls++;
+          saveServerRecord(entry,idx);
+          if(received && !hadUrl)st.recovered++;
+        }
+        st.pages++;n++;
+        st.cursor=data.next_cursor||null;
+        st.updatedAt=new Date().toISOString();
+        st.note='이번 조회 '+n+'페이지 진행 중';
+        if(!data.has_more){
+          st.phase='complete';st.cursor=null;
+          st.note='서버가 제공한 과거 기록의 끝까지 이미지 재조회 완료';
+        }
+        GM_setValue(IMAGE_REPAIR_KEY,st);
+        if(n===1||n%3===0||st.phase==='complete'){
+          showRepairProgress();refresh();
+          activity.textContent='이미지 재조회 '+st.pages+'페이지 · 주소 보강 '+st.recovered+'건';
+        }
+        if(st.phase==='complete')break;
+        await sleep(SERVER_PACE);
+      }
+      if(imageRepairStop)reason='사용자 중지: 마지막 페이지 커서부터 재개 가능';
+      else if(st.phase!=='complete')reason='1페이지 검사 완료. 다시 누르면 다음 페이지부터 이어집니다.';
+    }catch(e){
+      reason='재조회 중단: '+e.message;
+      console.error('차트멘토 이미지 재조회 중단',e);
+      alert(reason);
+    }finally{
+      st.note=reason||st.note;
+      st.updatedAt=new Date().toISOString();
+      GM_setValue(IMAGE_REPAIR_KEY,st);
+      imageRepairBusy=false;
+      showRepairProgress();refresh();fillPicker();
+      activity.textContent=st.note;
+    }
+  }
+  button('이미지 서버 확인 · 1페이지',()=>repairServerImages(1),repairButtons);
+  button('누락 이미지 보강 · 끝까지 재조회 (중지 가능)',()=>repairServerImages(Infinity),repairButtons);
+  button('이미지 재조회 중지',()=>{
+    imageRepairStop=true;activity.textContent='현재 페이지를 저장한 후 중지합니다';
+  },repairButtons);
+
   // V2.8: 전체 과거 대화 수집을 위한 길게 이어지는 스크롤 세션
   // 서버의 '최초 대화' 표시는 확인할 수 없으므로 멈춤과 완전 수집을 구별한다.
   const HISTORY_KEY='cm28_history_progress';
@@ -812,17 +921,18 @@
 
 
   function downloadJSON() {
-    const out={version:'2.9.1',exportedAt:new Date().toISOString(),
+    const out={version:'2.9.2',exportedAt:new Date().toISOString(),
       records:entries().map(x => ({...x.r, classification:resolved(x),
         storageKey:x.key})),
       manualLabels:entries().map(x => ({storageKey:x.key,
         value:GM_getValue(labelKey(x.key),null)})).filter(x=>x.value),
       historyProgress:GM_getValue(HISTORY_KEY,null),
       serverProgress:GM_getValue(SERVER_PROGRESS_KEY,null),
+      imageRepairProgress:GM_getValue(IMAGE_REPAIR_KEY,null),
       knownDateRange:oldestPost(),
       completenessNote:'이 파일은 브라우저 화면에 로딩되어 확인된 메시지를 포함합니다. 사이트의 최초 메시지까지 수집되었음을 보증하지 않습니다.'};
     const url=URL.createObjectURL(new Blob([JSON.stringify(out,null,2)],{type:'application/json'}));
-    const a=document.createElement('a'); a.href=url; a.download='chartmentor_v2_9_1_backup.json'; a.click();
+    const a=document.createElement('a'); a.href=url; a.download='chartmentor_v2_9_2_backup.json'; a.click();
     setTimeout(()=>URL.revokeObjectURL(url),1000);
   }
   button('JSON 백업 (라벨 포함)',downloadJSON,backupControls);
@@ -1038,7 +1148,7 @@
     const x=selectedItem();
     if(!x)return alert('먼저 메시지를 선택해 주세요.');
     const packet={
-      version:'2.9.1',kind:'chartmentor-analysis-packet',
+      version:'2.9.2',kind:'chartmentor-analysis-packet',
       exportedAt:new Date().toISOString(),
       message:{storageKey:x.key,author:x.r.author,text:x.r.text,
         postedAt:x.r.postedAt,timeRaw:x.r.timeRaw,
