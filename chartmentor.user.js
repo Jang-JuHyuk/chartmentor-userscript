@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         차트멘토 최영현 기록기 3.0
+// @name         차트멘토 최영현 기록기 2.0
 // @namespace    local.chartmentor.research
 // @version      3.0.0
 // @updateURL    https://raw.githubusercontent.com/Jang-JuHyuk/chartmentor-userscript/main/chartmentor.user.js
