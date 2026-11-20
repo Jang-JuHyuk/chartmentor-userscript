@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         차트멘토 최영현 기록기 2.0
 // @namespace    local.chartmentor.research
-// @version      3.0.0
+// @version      3.0.1
 // @updateURL    https://raw.githubusercontent.com/Jang-JuHyuk/chartmentor-userscript/main/chartmentor.user.js
 // @downloadURL  https://raw.githubusercontent.com/Jang-JuHyuk/chartmentor-userscript/main/chartmentor.user.js
 // @match        https://chartmentor.net/*
@@ -288,7 +288,7 @@
   const heading = document.createElement('div');
   heading.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:5px;padding:9px 10px 5px;cursor:move;touch-action:none;user-select:none';
   const headingText = document.createElement('strong');
-  headingText.textContent = '⋮⋮ 차트멘토 기록기 3.0.0';
+  headingText.textContent = '⋮⋮ 차트멘토 기록기 3.0.1';
   headingText.style.cssText = 'font-size:12px;pointer-events:none';
   heading.appendChild(headingText);
   const closeBtn = document.createElement('button');
@@ -595,7 +595,7 @@
         reviewedAt:x.review.reviewedAt
       }));
     if(!verified.length){alert('아직 직접 검토한 학습 자료가 없습니다.');return;}
-    const payload={version:'3.0.0',kind:'human-reviewed-knowledge',
+    const payload={version:'3.0.1',kind:'human-reviewed-knowledge',
       exportedAt:new Date().toISOString(),records:verified,
       warning:'원문은 출처 확인용이며 검토 메모는 사용자가 작성한 내용입니다. AI의 실전 수익성은 검증되지 않았습니다.'};
     const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
@@ -668,13 +668,13 @@
   const serverControls=document.createElement('div');
   serverControls.style.cssText='display:flex;flex-direction:column;gap:6px';
   serverPanel.appendChild(serverControls);
-  const syncOption=document.createElement('label');
-  syncOption.style.cssText='font-size:11px;display:flex;align-items:center;gap:5px;margin:7px 0';
-  const autoSync=document.createElement('input');
-  autoSync.type='checkbox';autoSync.checked=GM_getValue(SERVER_AUTOSYNC_KEY,true);
-  autoSync.onchange=()=>GM_setValue(SERVER_AUTOSYNC_KEY,autoSync.checked);
-  syncOption.append(autoSync,document.createTextNode('자동 동기화: 새 메시지 감지·3분마다 확인·재접속 시 보충'));
-  serverPanel.appendChild(syncOption);
+  // V3.0.1: 서버 자동동기화는 사용자가 요청하여 완전 비활성화.
+  if(GM_getValue(SERVER_AUTOSYNC_KEY,null)!==false)
+    GM_setValue(SERVER_AUTOSYNC_KEY,false);
+  const manualOnlyNote=document.createElement('div');
+  manualOnlyNote.style.cssText='font-size:11px;line-height:1.5;margin:7px 0';
+  manualOnlyNote.textContent='서버 자동 조회 OFF · 채팅 감지/시간 간격/재접속 자동 요청 없음. 버튼을 누를 때만 최신 기록을 조회합니다.';
+  serverPanel.appendChild(manualOnlyNote);
 
   // 기존 저장 기록을 삭제하지 않고, 메시지 ID가 있으면 그 ID를 우선 사용
   function validServerId(value){
@@ -810,7 +810,7 @@
   function progressLabel(extra){
     const p=GM_getValue(SERVER_PROGRESS_KEY,null);
     const line=p?.phase==='complete'
-      ? '과거 서버 제공 범위 조회 완료 · 다음 접속 때 신규 기록 보충'
+      ? '과거 서버 제공 범위 조회 완료 · 새로운 메시지는 수동으로 업데이트'
       :p?.phase==='catchup'
         ? '새 기록 보충 중 · 이어받기 가능'
         :p?.phase==='history'
@@ -899,12 +899,30 @@
       activity.textContent='서버 수집 종료 · 이번에 신규 '+addedThisRun+'건';
     }
   }
-  button('서버 연결 시험 · 1페이지',()=>runServerCollection(1),serverControls);
-  button('서버 전체 과거 수집 · 끝까지 자동 (중지 가능)',()=>runServerCollection(Infinity),serverControls);
-  button('서버 수집 중지',()=>{
+  button('최신 채팅만 업데이트 (수동 · 최대 5페이지)',()=>{
+    const phase=GM_getValue(SERVER_PROGRESS_KEY,null)?.phase;
+    if(phase==='history'){
+      alert('과거 수집이 미완료 상태입니다. 먼저 백업한 뒤 고급 수집에서 이어받기를 선택하세요.');
+      return;
+    }
+    runServerCollection(5,false);
+  },serverControls);
+  button('수동 수집 중지',()=>{
     serverStop=true;activity.textContent='현재 페이지 저장 후 중지 요청됨';
   },serverControls);
-  // 자동 업데이트: 탭이 열려 있을 때만 최신 기록과 연결한다.
+  const advancedServer=document.createElement('details');
+  advancedServer.style.cssText='margin-top:6px;border-top:1px solid #ffffff50;padding-top:5px';
+  const advancedSummary=document.createElement('summary');
+  advancedSummary.textContent='고급 수집 · 필요할 때만 사용';
+  advancedSummary.style.cssText='cursor:pointer;font-size:11px';
+  advancedServer.appendChild(advancedSummary);
+  const advancedButtons=document.createElement('div');
+  advancedButtons.style.cssText='display:flex;flex-direction:column;gap:5px;margin-top:5px';
+  advancedServer.appendChild(advancedButtons);
+  serverPanel.appendChild(advancedServer);
+  button('서버 연결 시험 · 1페이지',()=>runServerCollection(1),advancedButtons);
+  button('과거 전체 수집 · 이어받기 (수동)',()=>runServerCollection(Infinity),advancedButtons);
+  // V3.0.1: 서버 자동 동기화는 완전히 제거. JSON 백업은 로컬 파일만 처리.
   const autoBackupOption=document.createElement('label');
   autoBackupOption.style.cssText='font-size:11px;display:flex;align-items:center;gap:5px;margin:7px 0';
   const autoBackupBox=document.createElement('input');
@@ -915,20 +933,17 @@
     showAutoStatus();
   };
   autoBackupOption.append(autoBackupBox,
-    document.createTextNode('JSON 자동 백업 (새 자료가 있으면 하루 1회 다운로드 시도)'));
+    document.createTextNode('JSON 로컬 백업 자동 다운로드 시도 (새 자료 있으면 하루 1회)'));
   serverPanel.appendChild(autoBackupOption);
   const autoHelp=document.createElement('div');
   autoHelp.style.cssText='font-size:11px;white-space:pre-wrap;line-height:1.4;opacity:.9;margin:5px 0';
   serverPanel.appendChild(autoHelp);
-  let autoSyncTimer=null;
   function showAutoStatus(){
-    const paused=GM_getValue(AUTO_SYNC_PAUSE_KEY,null);
     const backupAt=GM_getValue(AUTO_BACKUP_LAST_KEY,0);
     const toKST=t=>t?new Date(t).toLocaleString('ko-KR',{timeZone:'Asia/Seoul'}):'아직 없음';
-    autoHelp.textContent=(paused?'자동 서버 확인 중지: '+paused:
-      '새 메시지 감지 및 3분 정기 확인(탭이 열려 있을 때)')+
-      '\n마지막 자동 백업 요청: '+toKST(backupAt)+
-      '\n※ 다운로드 허용 여부는 브라우저에서 확인. 탭이 닫히면 자동 실행되지 않습니다.';
+    autoHelp.textContent='차트멘토 서버 자동 요청 없음. 수동으로만 새로운 채팅을 조회합니다.'+
+      '\n마지막 로컬 JSON 백업 요청: '+toKST(backupAt)+
+      '\n※ JSON 저장은 내 브라우저에만 요청하며 차트멘토 서버에 전송되지 않습니다.';
   }
   showAutoStatus();
   function maybeAutoBackup(){
@@ -940,53 +955,19 @@
     const now=Date.now();
     if(!dirty || dirty<=last || now-last<AUTO_BACKUP_SPACING_MS)return;
     try{
-      downloadJSON(true); // 다운로드 요청. 실제 저장 여부는 브라우저 설정에 따름.
+      downloadJSON(true);
       GM_setValue(AUTO_BACKUP_LAST_KEY,now);
       showAutoStatus();
-      activity.textContent='최신 자료 JSON 자동 백업 다운로드 요청됨';
+      activity.textContent='로컬 JSON 백업 다운로드 요청됨';
     }catch(e){
-      console.warn('차트멘토 자동 백업 요청 실패',e);
-      activity.textContent='자동 백업 요청 실패 · 백업 메뉴에서 직접 확인';
+      console.warn('차트멘토 로컬 백업 요청 실패',e);
     }
   }
-  async function tryAutoSync(){
-    if(!location.pathname.startsWith('/ko/chat') ||
-       !autoSync.checked || document.hidden || navigator.onLine===false ||
-       serverBusy || imageRepairBusy || GM_getValue(AUTO_SYNC_PAUSE_KEY,null))
-      return;
-    const phase=GM_getValue(SERVER_PROGRESS_KEY,null)?.phase;
-    if(phase!=='complete' && phase!=='catchup')return;
-    GM_setValue(AUTO_SYNC_LAST_KEY,Date.now());
-    await runServerCollection(20,true);
-    showAutoStatus();
-    maybeAutoBackup();
-  }
-  function scheduleAutoSync(delayMs=8000){
-    if(!location.pathname.startsWith('/ko/chat') ||
-       !autoSync.checked || document.hidden || navigator.onLine===false ||
-       GM_getValue(AUTO_SYNC_PAUSE_KEY,null) || serverBusy || imageRepairBusy)
-      return;
-    const phase=GM_getValue(SERVER_PROGRESS_KEY,null)?.phase;
-    if(phase!=='complete' && phase!=='catchup')return;
-    const since=Date.now()-GM_getValue(AUTO_SYNC_LAST_KEY,0);
-    const delay=Math.max(delayMs,AUTO_SYNC_COOLDOWN_MS-since,0);
-    if(autoSyncTimer!==null)return; // 중복된 채팅 DOM 이벤트 합치기
-    autoSyncTimer=setTimeout(()=>{
-      autoSyncTimer=null;
-      tryAutoSync();
-    },delay);
-  }
-  // 채팅방을 떠나 있는 동안의 새 기록은 재접속 시 서버 커서로 보충한다.
-  setTimeout(()=>scheduleAutoSync(0),6000);
-  setInterval(()=>{
-    scheduleAutoSync(0);
-    maybeAutoBackup();
-    showAutoStatus();
-  },AUTO_SYNC_INTERVAL_MS);
+  // 서버 접속 없이 로컬 백업만 확인
+  setInterval(()=>{maybeAutoBackup();},AUTO_BACKUP_SPACING_MS);
   document.addEventListener('visibilitychange',()=>{
-    if(!document.hidden){scheduleAutoSync(1200);maybeAutoBackup();}
+    if(!document.hidden)maybeAutoBackup();
   });
-  addEventListener('online',()=>scheduleAutoSync(1200));
 
   // V2.9.2: 읽기 API 재조회로 과거 이미지 링크를 보강하고 원인별로 집계.
   // 기존 서버 과거-수집 커서는 절대 변경하지 않는다.
@@ -1220,7 +1201,7 @@
 
 
   function downloadJSON(automatic=false) {
-    const out={version:'3.0.0',exportedAt:new Date().toISOString(),
+    const out={version:'3.0.1',exportedAt:new Date().toISOString(),
       records:entries().map(x => ({...x.r, classification:resolved(x),
         storageKey:x.key})),
       knowledgeReviews:GM_listValues().filter(k=>k.startsWith(KNOWLEDGE_PREFIX))
@@ -1239,7 +1220,7 @@
       knownDateRange:oldestPost(),
       completenessNote:'이 파일은 브라우저 화면에 로딩되어 확인된 메시지를 포함합니다. 사이트의 최초 메시지까지 수집되었음을 보증하지 않습니다.'};
     const url=URL.createObjectURL(new Blob([JSON.stringify(out,null,2)],{type:'application/json'}));
-    const a=document.createElement('a'); a.href=url; a.download=automatic?'chartmentor_auto_'+new Date().toISOString().replace(/[:.]/g,'-')+'.json':'chartmentor_v3_0_0_backup.json'; a.click();
+    const a=document.createElement('a'); a.href=url; a.download=automatic?'chartmentor_auto_'+new Date().toISOString().replace(/[:.]/g,'-')+'.json':'chartmentor_v3_0_1_backup.json'; a.click();
     setTimeout(()=>URL.revokeObjectURL(url),1000);
   }
   button('JSON 백업 (라벨 포함)',()=>downloadJSON(false),backupControls);
@@ -1460,7 +1441,7 @@
     const x=selectedItem();
     if(!x)return alert('먼저 메시지를 선택해 주세요.');
     const packet={
-      version:'3.0.0',kind:'chartmentor-analysis-packet',
+      version:'3.0.1',kind:'chartmentor-analysis-packet',
       exportedAt:new Date().toISOString(),
       message:{storageKey:x.key,author:x.r.author,text:x.r.text,
         postedAt:x.r.postedAt,timeRaw:x.r.timeRaw,
@@ -1481,30 +1462,11 @@
     activity.textContent='선택 사례 패킷을 저장했습니다.';
   },fields);
 
-  // 이미지의 src/href가 나중에 설정되어도 놓치지 않도록 속성 변경과 로드를 감시
-  let scanTimer;
-  function queueScan(delay=180) {
-    clearTimeout(scanTimer);
-    scanTimer=setTimeout(scan,delay);
-  }
-  new MutationObserver(mutations=>{
-      if (mutations.every(m => panel.contains(m.target) || launcher.contains(m.target))) return;
-      queueScan();
-      const newChat=mutations.some(m=>m.type==='childList' &&
-        [...m.addedNodes].some(n=>n.nodeType===1 &&
-          (n.matches?.('[data-chat-bubble-row="true"]') ||
-           n.querySelector?.('[data-chat-bubble-row="true"]'))));
-      if(newChat)scheduleAutoSync(8000);
-    }).observe(document.body,{
-      childList:true,subtree:true,attributes:true,
-      attributeFilter:['src','srcset','href','data-src','data-original','data-full-src','data-image-url','style','title']
-    });
-  document.addEventListener('load',event=>{
-    const target=event.target;
-    if(target instanceof HTMLImageElement && target.closest('[data-chat-bubble-row="true"]'))
-      queueScan(80);
-  },true);
-  setInterval(()=>{scan();refresh();},5000);
-  scan();refresh();fillPicker();
-  button('분류 대상 목록 새로고침',fillPicker,fields);
+  // V3.0.1: 자동 DOM 감시와 5초 자동 스캔도 중지. 브라우저 부하 최소화.
+  button('현재 화면만 저장 (서버 요청 없음)',()=>{
+    const before=entries().length;
+    scan();refresh();fillPicker();
+    activity.textContent='현재 화면 수동 확인 완료 · 기록 '+before+' → '+entries().length+'건';
+  },controls);
+  refresh();fillPicker();
 })();
