@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         차트멘토 최영현 기록기 2.0
+// @name         차트멘토 최영현 기록기 3.0
 // @namespace    local.chartmentor.research
-// @version      2.9.3
+// @version      3.0.0
 // @updateURL    https://raw.githubusercontent.com/Jang-JuHyuk/chartmentor-userscript/main/chartmentor.user.js
 // @downloadURL  https://raw.githubusercontent.com/Jang-JuHyuk/chartmentor-userscript/main/chartmentor.user.js
 // @match        https://chartmentor.net/*
@@ -288,7 +288,7 @@
   const heading = document.createElement('div');
   heading.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:5px;padding:9px 10px 5px;cursor:move;touch-action:none;user-select:none';
   const headingText = document.createElement('strong');
-  headingText.textContent = '⋮⋮ 차트멘토 기록기 2.9.3';
+  headingText.textContent = '⋮⋮ 차트멘토 기록기 3.0.0';
   headingText.style.cssText = 'font-size:12px;pointer-events:none';
   heading.appendChild(headingText);
   const closeBtn = document.createElement('button');
@@ -306,7 +306,7 @@
   panel.appendChild(activity);
 
   const tabs = document.createElement('div');
-  tabs.style.cssText='display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;padding:8px';
+  tabs.style.cssText='display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;padding:8px';
   panel.appendChild(tabs);
   const body = document.createElement('div');
   body.style.cssText = 'display:none;max-height:min(60vh,540px);overflow-y:auto;padding:4px 10px 11px;box-sizing:border-box;overscroll-behavior:contain';
@@ -326,6 +326,7 @@
   }
   const collectionPage=addTab('collect','수집');
   const analysisPage=addTab('analysis','차트 분석');
+  const knowledgePage=addTab('knowledge','지식');
   const backupPage=addTab('backup','백업 · 설정');
   function activate(id) {
     activeView=id;
@@ -337,7 +338,7 @@
     }
     positionPanel(parseFloat(panel.style.left),parseFloat(panel.style.top));
   }
-  activate(null); // 처음에는 상위 버튼 3개만 표시
+  activate(null); // 처음에는 메뉴 버튼만 표시
 
   // 닫으면 화면에 작은 복원 버튼만 남김
   const launcher=document.createElement('button');
@@ -405,6 +406,205 @@
   backupHelp.textContent='백업 파일은 로컬에 저장됩니다. 기존 기록 키(cm22_message_)를 유지합니다. 데이터 삭제 기능은 없습니다.';
   backupHelp.style.cssText='font-size:11px;line-height:1.5;opacity:.85;margin-top:9px';
   backupPage.appendChild(backupHelp);
+
+  // V3.0: 텍스트 키워드로 "검토 후보"만 선별한다.
+  // AI 추론/매매 신호 생성 없음. 사용자가 검토한 지식만 검증 목록에 편입.
+  const KNOWLEDGE_PREFIX='cm30_review_';
+  const knowledgeTypes=[
+    ['TECH','차트 구조·기술적 분석',
+      /오더블록|\bOB\b|피보나치|되돌림|1\.618|2\.618|0\.886|0\.382|추세선|넥라인|캔들|유동성|베어트랩|Bear Trap|LH.?LL|HH.?HL|저항|지지|웨지|쐐기|리테스트/i],
+    ['TRADE','진입·청산·시나리오',
+      /진입|익절|숏\s*포지션|롱\s*포지션|포지션|손절|지정가|매수|매도|셋업|목표가|매매\s*계획|상방\s*돌파|하방\s*돌파/i],
+    ['RISK','위험·자금 관리',
+      /손익비|레버리지|스탑로스|손절|본절|리스크\s*관리|비중\s*조절|물타기|최대\s*손실|포지션\s*사이즈|진입\s*비중/i],
+    ['MIND','매매 심법·태도',
+      /본전\s*심리|심법|멘탈|포모|FOMO|조급|매매\s*원칙|기다림|감정\s*매매|손실\s*회피|경험치|인내|욕심|배움의\s*자세/i],
+    ['MARKET','시장·거시 해석',
+      /비트코인|나스닥|CPI|FOMC|금리|거래량|시장\s*참여|시장\s*심리|상승\s*추세|하락\s*추세|횡보|랠리|사이클|고용지표/i]
+  ];
+  function knowledgeTags(record){
+    const t=record.text||'';
+    return knowledgeTypes.filter(([, ,rx])=>rx.test(t)).map(([id])=>id);
+  }
+  function knowledgeReviewKey(item){
+    return KNOWLEDGE_PREFIX+hash(item.r.messageId||item.key);
+  }
+  function readKnowledgeReview(item){
+    return GM_getValue(knowledgeReviewKey(item),null);
+  }
+  const knowledgeIntro=document.createElement('div');
+  knowledgeIntro.textContent='원문 기반 검토함 · 아래 분류는 키워드 후보이며 선생님의 실제 매매 규칙으로 확정된 내용이 아닙니다.';
+  knowledgeIntro.style.cssText='font-size:11px;line-height:1.5;margin:2px 0 8px';
+  knowledgePage.appendChild(knowledgeIntro);
+  const knowledgeSearch=document.createElement('input');
+  knowledgeSearch.type='search';
+  knowledgeSearch.placeholder='검색: OB, 본전 심리, 손익비, 가격 등';
+  knowledgeSearch.style.cssText='width:100%;box-sizing:border-box;padding:8px;border-radius:6px;background:white;color:#262626;border:0;margin-bottom:6px';
+  knowledgePage.appendChild(knowledgeSearch);
+  const knowledgeTopic=select([
+    ['ALL','전체 메시지'],['TECH','차트 구조·기술적 분석'],
+    ['TRADE','진입·청산·시나리오'],['RISK','위험·자금 관리'],
+    ['MIND','매매 심법·태도'],['MARKET','시장·거시 해석']
+  ],knowledgePage);
+  const knowledgeFilter=select([
+    ['ALL','검토 여부 전체'],['PENDING','아직 검토하지 않음'],
+    ['CONFIRMED','직접 검토한 지식'],['HOLD','판단 보류'],['EXCLUDED','학습에서 제외']
+  ],knowledgePage);
+  const knowledgeSummary=document.createElement('div');
+  knowledgeSummary.style.cssText='font-size:11px;margin:8px 0;line-height:1.5;white-space:pre-wrap';
+  knowledgePage.appendChild(knowledgeSummary);
+  const knowledgeActions=document.createElement('div');
+  knowledgeActions.style.cssText='display:flex;flex-direction:column;gap:6px;margin-bottom:7px';
+  knowledgePage.appendChild(knowledgeActions);
+  const knowledgeList=document.createElement('div');
+  knowledgeList.style.cssText='display:flex;flex-direction:column;gap:5px';
+  knowledgePage.appendChild(knowledgeList);
+  const knowledgeDetail=document.createElement('div');
+  knowledgeDetail.style.cssText='margin:10px 0;border-top:1px solid #ffffff60;padding-top:9px;white-space:pre-wrap';
+  knowledgePage.appendChild(knowledgeDetail);
+  let knowledgeRows=[],knowledgeSelected=null,knowledgeOffset=0;
+  function refreshKnowledgeIndex(){
+    knowledgeRows=entries().map(item=>({
+      ...item,
+      tags:knowledgeTags(item.r),
+      review:readKnowledgeReview(item)
+    })).sort((a,b)=>(Date.parse(b.r.postedAt)||0)-(Date.parse(a.r.postedAt)||0));
+    knowledgeOffset=0;
+    renderKnowledgeList();
+  }
+  function knowledgeMatches(item){
+    const q=knowledgeSearch.value.trim().toLocaleLowerCase('ko-KR');
+    if(q && !(item.r.text||'').toLocaleLowerCase('ko-KR').includes(q))return false;
+    const topic=knowledgeTopic.value;
+    const effective=(item.review?.status==='CONFIRMED' && item.review?.category)
+      ?item.review.category:null;
+    if(topic!=='ALL' && effective!==topic && (!effective && !item.tags.includes(topic)))return false;
+    const status=knowledgeFilter.value;
+    if(status==='PENDING' && item.review?.status)return false;
+    if(status!=='ALL' && status!=='PENDING' && item.review?.status!==status)return false;
+    return true;
+  }
+  function renderKnowledgeList(){
+    knowledgeList.replaceChildren();
+    if(!knowledgeRows.length){
+      knowledgeSummary.textContent='아래 버튼으로 로컬 기록을 불러오세요.';
+      return;
+    }
+    const subset=knowledgeRows.filter(knowledgeMatches);
+    const confirmed=knowledgeRows.filter(x=>x.review?.status==='CONFIRMED').length;
+    knowledgeSummary.textContent='저장된 메시지 '+knowledgeRows.length+
+      '건 · 직접 검토 완료 '+confirmed+'건\n현재 필터 '+subset.length+'건'+
+      ' · 처음 30건부터 표시 (AI가 자동 확정한 전략은 0건)';
+    const shown=subset.slice(knowledgeOffset,knowledgeOffset+30);
+    for(const item of shown){
+      const el=document.createElement('button');
+      el.type='button';
+      el.style.cssText='text-align:left;padding:8px;border:1px solid #ffffff70;background:#522c96;color:white;border-radius:6px;white-space:pre-wrap;cursor:pointer;font-size:11px;line-height:1.4;overflow-wrap:anywhere';
+      const tagNames=item.tags.map(id=>knowledgeTypes.find(t=>t[0]===id)?.[1]||id);
+      const note=item.review?.status==='CONFIRMED'?'[검토 완료] ':item.review?.status==='EXCLUDED'?'[제외] ':item.review?.status==='HOLD'?'[보류] ':'[후보] ';
+      el.textContent=note+(item.r.postedAt||'날짜 미확인')+'\n'+
+        (tagNames.join(' · ')||'키워드 미분류')+'\n'+
+        ((item.r.text||'[이미지 또는 본문 없음]').replace(/\s+/g,' ').slice(0,110));
+      el.onclick=()=>openKnowledgeItem(item);
+      knowledgeList.appendChild(el);
+    }
+    if(knowledgeOffset+30<subset.length){
+      const more=button('다음 30건 보기',()=>{
+        knowledgeOffset+=30;renderKnowledgeList();
+      },knowledgeList);
+      more.style.marginTop='4px';
+    }
+  }
+  function openKnowledgeItem(item){
+    knowledgeSelected=item;
+    knowledgeDetail.replaceChildren();
+    const heading=document.createElement('div');
+    heading.style.cssText='font-weight:700;margin-bottom:5px';
+    heading.textContent='원문 · '+(item.r.postedAt||'작성 시각 미확인');
+    knowledgeDetail.appendChild(heading);
+    const provenance=document.createElement('div');
+    provenance.style.cssText='font-size:10px;overflow-wrap:anywhere;opacity:.85;margin-bottom:7px';
+    provenance.textContent='작성자: '+item.r.author+'\n메시지 ID: '+(item.r.messageId||'기존 스크롤 기록(ID 없음)')+
+      '\n아래 원문은 수정되지 않습니다.';
+    knowledgeDetail.appendChild(provenance);
+    const source=document.createElement('div');
+    source.style.cssText='padding:8px;background:#4d2690;border-radius:5px;font-size:11px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:340px;overflow-y:auto';
+    source.textContent=item.r.text||'[텍스트 없음]';
+    knowledgeDetail.appendChild(source);
+    const links=(item.r.images||[]).map(img=>cleanUrl(img.url)).filter(Boolean);
+    if(links.length){
+      const urls=document.createElement('div');
+      urls.style.cssText='display:flex;flex-direction:column;gap:5px;margin:8px 0';
+      links.forEach((url,i)=>{
+        const link=document.createElement('a');
+        link.href=url;link.target='_blank';link.rel='noopener noreferrer';
+        link.textContent='원본 이미지 '+(i+1)+' 열기';
+        link.style.color='white';link.style.textDecoration='underline';
+        urls.appendChild(link);
+      });knowledgeDetail.appendChild(urls);
+    }else if(item.r.serverMessageType==='image'){
+      title('※ 서버 이미지형 메시지이나 현재 저장된 이미지 URL 없음',knowledgeDetail);
+    }
+    title('사람이 확인한 최종 분류',knowledgeDetail);
+    const category=select([
+      ['', '검토 필요 / 미분류'],...knowledgeTypes.map(([id,label])=>[id,label]),
+      ['OTHER','기타']
+    ],knowledgeDetail);
+    title('검토 상태 (직접 검토하기 전에는 확정하지 마세요)',knowledgeDetail);
+    const state=select([
+      ['PENDING','아직 검토 안 함'],['CONFIRMED','원문 확인 · 학습 자료로 채택'],
+      ['HOLD','맥락·차트 확인 필요'],['EXCLUDED','학습 자료에서 제외']
+    ],knowledgeDetail);
+    const note=document.createElement('textarea');
+    note.placeholder='내 검토 메모: 원문의 실제 조건 / 앞뒤 대화 확인 필요 사항 / AI 해석과 구분';
+    note.rows=4;
+    note.style.cssText='box-sizing:border-box;width:100%;padding:7px;border-radius:6px;color:#222;background:white;margin-top:7px';
+    knowledgeDetail.appendChild(note);
+    const last=item.review||{};
+    category.value=last.category||'';
+    state.value=last.status||'PENDING';
+    note.value=last.note||'';
+    button('검토 메모 · 상태 저장',()=>{
+      if(state.value==='CONFIRMED' && !category.value){
+        alert('학습 자료로 채택하려면 최종 분류부터 선택해 주세요.');return;
+      }
+      const val={status:state.value,category:category.value,note:note.value.trim(),
+        reviewedAt:new Date().toISOString(),messageId:item.r.messageId||null};
+      GM_setValue(knowledgeReviewKey(item),val);
+      markDataChanged();
+      item.review=val;
+      activity.textContent='원문은 그대로 유지하고 검토 결과만 별도로 저장했습니다.';
+      renderKnowledgeList();
+    },knowledgeDetail);
+  }
+  knowledgeSearch.addEventListener('input',()=>{
+    knowledgeOffset=0;renderKnowledgeList();
+  });
+  knowledgeTopic.onchange=()=>{knowledgeOffset=0;renderKnowledgeList();};
+  knowledgeFilter.onchange=()=>{knowledgeOffset=0;renderKnowledgeList();};
+  button('로컬 기록에서 지식 후보 불러오기',refreshKnowledgeIndex,knowledgeActions);
+  button('검토 완료 지식만 JSON으로 저장',()=>{
+    if(!knowledgeRows.length)refreshKnowledgeIndex();
+    const verified=knowledgeRows.filter(x=>x.review?.status==='CONFIRMED')
+      .map(x=>({
+        source:{messageId:x.r.messageId||null,storageKey:x.key,
+          postedAt:x.r.postedAt||null,author:x.r.author,rawText:x.r.text,
+          images:(x.r.images||[]).map(i=>({url:cleanUrl(i.url)}))},
+        verifiedCategory:x.review.category,
+        humanNote:x.review.note||'',
+        reviewedAt:x.review.reviewedAt
+      }));
+    if(!verified.length){alert('아직 직접 검토한 학습 자료가 없습니다.');return;}
+    const payload={version:'3.0.0',kind:'human-reviewed-knowledge',
+      exportedAt:new Date().toISOString(),records:verified,
+      warning:'원문은 출처 확인용이며 검토 메모는 사용자가 작성한 내용입니다. AI의 실전 수익성은 검증되지 않았습니다.'};
+    const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');a.href=url;
+    a.download='chartmentor_verified_knowledge_'+new Date().toISOString().slice(0,10)+'.json';
+    a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+  },knowledgeActions);
+
   function imageStats() {
     const rows=entries();
     const imageRows=rows.filter(x=>(x.r.images||[]).length);
@@ -1020,9 +1220,11 @@
 
 
   function downloadJSON(automatic=false) {
-    const out={version:'2.9.3',exportedAt:new Date().toISOString(),
+    const out={version:'3.0.0',exportedAt:new Date().toISOString(),
       records:entries().map(x => ({...x.r, classification:resolved(x),
         storageKey:x.key})),
+      knowledgeReviews:GM_listValues().filter(k=>k.startsWith(KNOWLEDGE_PREFIX))
+        .map(key=>({key,value:GM_getValue(key,null)})),
       manualLabels:entries().map(x => ({storageKey:x.key,
         value:GM_getValue(labelKey(x.key),null)})).filter(x=>x.value),
       historyProgress:GM_getValue(HISTORY_KEY,null),
@@ -1037,7 +1239,7 @@
       knownDateRange:oldestPost(),
       completenessNote:'이 파일은 브라우저 화면에 로딩되어 확인된 메시지를 포함합니다. 사이트의 최초 메시지까지 수집되었음을 보증하지 않습니다.'};
     const url=URL.createObjectURL(new Blob([JSON.stringify(out,null,2)],{type:'application/json'}));
-    const a=document.createElement('a'); a.href=url; a.download=automatic?'chartmentor_auto_'+new Date().toISOString().replace(/[:.]/g,'-')+'.json':'chartmentor_v2_9_3_backup.json'; a.click();
+    const a=document.createElement('a'); a.href=url; a.download=automatic?'chartmentor_auto_'+new Date().toISOString().replace(/[:.]/g,'-')+'.json':'chartmentor_v3_0_0_backup.json'; a.click();
     setTimeout(()=>URL.revokeObjectURL(url),1000);
   }
   button('JSON 백업 (라벨 포함)',()=>downloadJSON(false),backupControls);
@@ -1087,6 +1289,11 @@
         if(Array.isArray(obj.manualLabels)) obj.manualLabels.forEach(x=>{
           if(x.storageKey?.startsWith(PREFIX)&&x.value)
             GM_setValue(labelKey(x.storageKey),x.value);
+        });
+        if(Array.isArray(obj.knowledgeReviews))obj.knowledgeReviews.forEach(x=>{
+          if(typeof x.key==='string' && /^cm30_review_[0-9a-f]{16}$/.test(x.key)
+             && x.value && typeof x.value==='object')
+            GM_setValue(x.key,x.value);
         });
       }catch(err){console.error('복구 오류',f.name,err);}
     }
@@ -1253,7 +1460,7 @@
     const x=selectedItem();
     if(!x)return alert('먼저 메시지를 선택해 주세요.');
     const packet={
-      version:'2.9.3',kind:'chartmentor-analysis-packet',
+      version:'3.0.0',kind:'chartmentor-analysis-packet',
       exportedAt:new Date().toISOString(),
       message:{storageKey:x.key,author:x.r.author,text:x.r.text,
         postedAt:x.r.postedAt,timeRaw:x.r.timeRaw,
