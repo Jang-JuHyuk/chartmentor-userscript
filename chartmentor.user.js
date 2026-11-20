@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         차트멘토 최영현 기록기 2.0
 // @namespace    local.chartmentor.research
-// @version      2.9.2
+// @version      2.9.3
 // @updateURL    https://raw.githubusercontent.com/Jang-JuHyuk/chartmentor-userscript/main/chartmentor.user.js
 // @downloadURL  https://raw.githubusercontent.com/Jang-JuHyuk/chartmentor-userscript/main/chartmentor.user.js
 // @match        https://chartmentor.net/*
@@ -89,11 +89,11 @@
         timeLabel: old.timeLabel || r.timeLabel,
         briefing: old.briefing || r.briefing};
       if (JSON.stringify(merged) !== JSON.stringify(old)) {
-        GM_setValue(key, merged); return true;
+        GM_setValue(key, merged); markDataChanged(); return true;
       }
       return false;
     }
-    GM_setValue(key, r); return true;
+    GM_setValue(key, r); markDataChanged(); return true;
   }
   // V2.7: 지연 로딩된 이미지도 원본 URL로 연결하는 탐색기
   // 이미지·링크·picture의 속성을 검사하되, 실제 저장은 승인된 S3 경로만 허용한다.
@@ -288,7 +288,7 @@
   const heading = document.createElement('div');
   heading.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:5px;padding:9px 10px 5px;cursor:move;touch-action:none;user-select:none';
   const headingText = document.createElement('strong');
-  headingText.textContent = '⋮⋮ 차트멘토 기록기 2.9.2';
+  headingText.textContent = '⋮⋮ 차트멘토 기록기 2.9.3';
   headingText.style.cssText = 'font-size:12px;pointer-events:none';
   heading.appendChild(headingText);
   const closeBtn = document.createElement('button');
@@ -435,6 +435,23 @@
   const SERVER_ROOM='87983b7a-ab21-4fd7-bfd3-bf42cd0d2898';
   const SERVER_PROGRESS_KEY='cm29_server_progress';
   const SERVER_AUTOSYNC_KEY='cm29_auto_sync';
+  const AUTO_BACKUP_ENABLED_KEY='cm293_auto_backup_enabled';
+  const AUTO_BACKUP_LAST_KEY='cm293_auto_backup_last';
+  const AUTO_BACKUP_DIRTY_KEY='cm293_backup_dirty_at';
+  const AUTO_SYNC_LAST_KEY='cm293_auto_sync_last_attempt';
+  const AUTO_SYNC_PAUSE_KEY='cm293_auto_sync_paused';
+  const AUTO_BACKUP_SPACING_MS=24*60*60*1000;
+  const AUTO_SYNC_COOLDOWN_MS=60*1000;
+  const AUTO_SYNC_INTERVAL_MS=3*60*1000;
+  let lastDirtyWriteAt=0;
+  // 매번 수천 건을 내보내지 않고 변경 여부만 안전하게 표시
+  function markDataChanged(){
+    const now=Date.now();
+    if(now-lastDirtyWriteAt>=15000){
+      lastDirtyWriteAt=now;
+      GM_setValue(AUTO_BACKUP_DIRTY_KEY,now);
+    }
+  }
   const SERVER_PACE=1400;
   const SERVER_AUTHOR='최영현';
   const serverPanel=document.createElement('details');
@@ -456,7 +473,7 @@
   const autoSync=document.createElement('input');
   autoSync.type='checkbox';autoSync.checked=GM_getValue(SERVER_AUTOSYNC_KEY,true);
   autoSync.onchange=()=>GM_setValue(SERVER_AUTOSYNC_KEY,autoSync.checked);
-  syncOption.append(autoSync,document.createTextNode('과거 전체 수집 완료 후, 채팅방 접속 시 새 기록 자동 보충'));
+  syncOption.append(autoSync,document.createTextNode('자동 동기화: 새 메시지 감지·3분마다 확인·재접속 시 보충'));
   serverPanel.appendChild(syncOption);
 
   // 기존 저장 기록을 삭제하지 않고, 메시지 ID가 있으면 그 ID를 우선 사용
@@ -564,6 +581,7 @@
     index.byId.set(id,key);
     if(!old || JSON.stringify(updated)!==JSON.stringify(old)){
       GM_setValue(key,updated);
+      markDataChanged();
       return old?'enriched':'added';
     }
     return 'already';
@@ -605,7 +623,7 @@
   progressLabel();
   function hasKnownServerId(id,index){return !!(id&&index.byId.has(id));}
   async function runServerCollection(maxPages,auto=false){
-    if(serverBusy)return;
+    if(serverBusy||imageRepairBusy)return;
     if(location.hostname!=='chartmentor.net')return;
     serverBusy=true;serverStop=false;
     const oldState=GM_getValue(SERVER_PROGRESS_KEY,null);
@@ -667,9 +685,13 @@
     }catch(err){
       reason='중단: '+err.message;
       console.error('차트멘토 서버 수집 오류',err);
+      // 자동 수집 시 인증 오류·요청 제한에 대해 반복 재시도하지 않는다.
+      if(auto)GM_setValue(AUTO_SYNC_PAUSE_KEY,reason);
       if(!auto)alert(reason);
     }finally{
       serverBusy=false;
+      if(!reason && state.phase==='complete')
+        GM_setValue(AUTO_SYNC_PAUSE_KEY,null);
       state.note=reason||state.note;
       state.updatedAt=new Date().toISOString();
       GM_setValue(SERVER_PROGRESS_KEY,state);
@@ -682,12 +704,89 @@
   button('서버 수집 중지',()=>{
     serverStop=true;activity.textContent='현재 페이지 저장 후 중지 요청됨';
   },serverControls);
-  // 과거를 한 번 모두 조회한 뒤에만 새 메시지를 가볍게 보충한다.
-  setTimeout(()=>{
-    if(GM_getValue(SERVER_AUTOSYNC_KEY,true) &&
-       GM_getValue(SERVER_PROGRESS_KEY,null)?.phase==='complete')
-      runServerCollection(20,true);
-  },6000);
+  // 자동 업데이트: 탭이 열려 있을 때만 최신 기록과 연결한다.
+  const autoBackupOption=document.createElement('label');
+  autoBackupOption.style.cssText='font-size:11px;display:flex;align-items:center;gap:5px;margin:7px 0';
+  const autoBackupBox=document.createElement('input');
+  autoBackupBox.type='checkbox';
+  autoBackupBox.checked=GM_getValue(AUTO_BACKUP_ENABLED_KEY,true);
+  autoBackupBox.onchange=()=>{
+    GM_setValue(AUTO_BACKUP_ENABLED_KEY,autoBackupBox.checked);
+    showAutoStatus();
+  };
+  autoBackupOption.append(autoBackupBox,
+    document.createTextNode('JSON 자동 백업 (새 자료가 있으면 하루 1회 다운로드 시도)'));
+  serverPanel.appendChild(autoBackupOption);
+  const autoHelp=document.createElement('div');
+  autoHelp.style.cssText='font-size:11px;white-space:pre-wrap;line-height:1.4;opacity:.9;margin:5px 0';
+  serverPanel.appendChild(autoHelp);
+  let autoSyncTimer=null;
+  function showAutoStatus(){
+    const paused=GM_getValue(AUTO_SYNC_PAUSE_KEY,null);
+    const backupAt=GM_getValue(AUTO_BACKUP_LAST_KEY,0);
+    const toKST=t=>t?new Date(t).toLocaleString('ko-KR',{timeZone:'Asia/Seoul'}):'아직 없음';
+    autoHelp.textContent=(paused?'자동 서버 확인 중지: '+paused:
+      '새 메시지 감지 및 3분 정기 확인(탭이 열려 있을 때)')+
+      '\n마지막 자동 백업 요청: '+toKST(backupAt)+
+      '\n※ 다운로드 허용 여부는 브라우저에서 확인. 탭이 닫히면 자동 실행되지 않습니다.';
+  }
+  showAutoStatus();
+  function maybeAutoBackup(){
+    if(!location.pathname.startsWith('/ko/chat') ||
+       !GM_getValue(AUTO_BACKUP_ENABLED_KEY,true) ||
+       document.hidden||serverBusy||imageRepairBusy)return;
+    const last=GM_getValue(AUTO_BACKUP_LAST_KEY,0);
+    const dirty=GM_getValue(AUTO_BACKUP_DIRTY_KEY,0);
+    const now=Date.now();
+    if(!dirty || dirty<=last || now-last<AUTO_BACKUP_SPACING_MS)return;
+    try{
+      downloadJSON(true); // 다운로드 요청. 실제 저장 여부는 브라우저 설정에 따름.
+      GM_setValue(AUTO_BACKUP_LAST_KEY,now);
+      showAutoStatus();
+      activity.textContent='최신 자료 JSON 자동 백업 다운로드 요청됨';
+    }catch(e){
+      console.warn('차트멘토 자동 백업 요청 실패',e);
+      activity.textContent='자동 백업 요청 실패 · 백업 메뉴에서 직접 확인';
+    }
+  }
+  async function tryAutoSync(){
+    if(!location.pathname.startsWith('/ko/chat') ||
+       !autoSync.checked || document.hidden || navigator.onLine===false ||
+       serverBusy || imageRepairBusy || GM_getValue(AUTO_SYNC_PAUSE_KEY,null))
+      return;
+    const phase=GM_getValue(SERVER_PROGRESS_KEY,null)?.phase;
+    if(phase!=='complete' && phase!=='catchup')return;
+    GM_setValue(AUTO_SYNC_LAST_KEY,Date.now());
+    await runServerCollection(20,true);
+    showAutoStatus();
+    maybeAutoBackup();
+  }
+  function scheduleAutoSync(delayMs=8000){
+    if(!location.pathname.startsWith('/ko/chat') ||
+       !autoSync.checked || document.hidden || navigator.onLine===false ||
+       GM_getValue(AUTO_SYNC_PAUSE_KEY,null) || serverBusy || imageRepairBusy)
+      return;
+    const phase=GM_getValue(SERVER_PROGRESS_KEY,null)?.phase;
+    if(phase!=='complete' && phase!=='catchup')return;
+    const since=Date.now()-GM_getValue(AUTO_SYNC_LAST_KEY,0);
+    const delay=Math.max(delayMs,AUTO_SYNC_COOLDOWN_MS-since,0);
+    if(autoSyncTimer!==null)return; // 중복된 채팅 DOM 이벤트 합치기
+    autoSyncTimer=setTimeout(()=>{
+      autoSyncTimer=null;
+      tryAutoSync();
+    },delay);
+  }
+  // 채팅방을 떠나 있는 동안의 새 기록은 재접속 시 서버 커서로 보충한다.
+  setTimeout(()=>scheduleAutoSync(0),6000);
+  setInterval(()=>{
+    scheduleAutoSync(0);
+    maybeAutoBackup();
+    showAutoStatus();
+  },AUTO_SYNC_INTERVAL_MS);
+  document.addEventListener('visibilitychange',()=>{
+    if(!document.hidden){scheduleAutoSync(1200);maybeAutoBackup();}
+  });
+  addEventListener('online',()=>scheduleAutoSync(1200));
 
   // V2.9.2: 읽기 API 재조회로 과거 이미지 링크를 보강하고 원인별로 집계.
   // 기존 서버 과거-수집 커서는 절대 변경하지 않는다.
@@ -920,22 +1019,28 @@
   },controls);
 
 
-  function downloadJSON() {
-    const out={version:'2.9.2',exportedAt:new Date().toISOString(),
+  function downloadJSON(automatic=false) {
+    const out={version:'2.9.3',exportedAt:new Date().toISOString(),
       records:entries().map(x => ({...x.r, classification:resolved(x),
         storageKey:x.key})),
       manualLabels:entries().map(x => ({storageKey:x.key,
         value:GM_getValue(labelKey(x.key),null)})).filter(x=>x.value),
       historyProgress:GM_getValue(HISTORY_KEY,null),
       serverProgress:GM_getValue(SERVER_PROGRESS_KEY,null),
+      autoSyncControl:{
+        enabled:GM_getValue(SERVER_AUTOSYNC_KEY,true),
+        paused:GM_getValue(AUTO_SYNC_PAUSE_KEY,null),
+        lastAttemptAt:GM_getValue(AUTO_SYNC_LAST_KEY,null),
+        lastBackupRequestAt:GM_getValue(AUTO_BACKUP_LAST_KEY,null)
+      },
       imageRepairProgress:GM_getValue(IMAGE_REPAIR_KEY,null),
       knownDateRange:oldestPost(),
       completenessNote:'이 파일은 브라우저 화면에 로딩되어 확인된 메시지를 포함합니다. 사이트의 최초 메시지까지 수집되었음을 보증하지 않습니다.'};
     const url=URL.createObjectURL(new Blob([JSON.stringify(out,null,2)],{type:'application/json'}));
-    const a=document.createElement('a'); a.href=url; a.download='chartmentor_v2_9_2_backup.json'; a.click();
+    const a=document.createElement('a'); a.href=url; a.download=automatic?'chartmentor_auto_'+new Date().toISOString().replace(/[:.]/g,'-')+'.json':'chartmentor_v2_9_3_backup.json'; a.click();
     setTimeout(()=>URL.revokeObjectURL(url),1000);
   }
-  button('JSON 백업 (라벨 포함)',downloadJSON,backupControls);
+  button('JSON 백업 (라벨 포함)',()=>downloadJSON(false),backupControls);
   const doneKey=url=>'cm23_downloaded_'+hash(url);
   let downloading=false, stopDownload=false;
   button('새 원본 이미지 최대 10장 저장',async()=>{
@@ -1148,7 +1253,7 @@
     const x=selectedItem();
     if(!x)return alert('먼저 메시지를 선택해 주세요.');
     const packet={
-      version:'2.9.2',kind:'chartmentor-analysis-packet',
+      version:'2.9.3',kind:'chartmentor-analysis-packet',
       exportedAt:new Date().toISOString(),
       message:{storageKey:x.key,author:x.r.author,text:x.r.text,
         postedAt:x.r.postedAt,timeRaw:x.r.timeRaw,
@@ -1178,6 +1283,11 @@
   new MutationObserver(mutations=>{
       if (mutations.every(m => panel.contains(m.target) || launcher.contains(m.target))) return;
       queueScan();
+      const newChat=mutations.some(m=>m.type==='childList' &&
+        [...m.addedNodes].some(n=>n.nodeType===1 &&
+          (n.matches?.('[data-chat-bubble-row="true"]') ||
+           n.querySelector?.('[data-chat-bubble-row="true"]'))));
+      if(newChat)scheduleAutoSync(8000);
     }).observe(document.body,{
       childList:true,subtree:true,attributes:true,
       attributeFilter:['src','srcset','href','data-src','data-original','data-full-src','data-image-url','style','title']
